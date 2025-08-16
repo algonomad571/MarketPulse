@@ -1,0 +1,85 @@
+# Multi-stage build for C++ application
+FROM ubuntu:22.04 AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    ninja-build \
+    pkg-config \
+    git \
+    curl \
+    wget \
+    libboost-all-dev \
+    libssl-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblzma-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install vcpkg for package management
+WORKDIR /vcpkg
+RUN git clone https://github.com/Microsoft/vcpkg.git . && \
+    ./bootstrap-vcpkg.sh
+
+# Install C++ dependencies via vcpkg
+RUN ./vcpkg install \
+    boost-asio \
+    boost-beast \
+    boost-system \
+    boost-filesystem \
+    boost-thread \
+    spdlog \
+    nlohmann-json \
+    fmt
+
+# Copy source code
+WORKDIR /app
+COPY src/ src/
+COPY CMakeLists.txt .
+COPY config.json .
+
+# Build the application
+RUN mkdir build && cd build && \
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
+        -DWITH_BINANCE=OFF \
+        -DWITH_CLICKHOUSE=OFF && \
+    cmake --build . --parallel $(nproc)
+
+# Runtime stage
+FROM ubuntu:22.04
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libboost-system1.74.0 \
+    libboost-filesystem1.74.0 \
+    libboost-thread1.74.0 \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create application user
+RUN useradd -m -s /bin/bash mduser
+
+# Copy built application
+WORKDIR /app
+COPY --from=builder /app/build/md_core_main .
+COPY --from=builder /app/config.json .
+
+# Create data directory
+RUN mkdir -p data && chown -R mduser:mduser /app
+
+# Switch to application user
+USER mduser
+
+# Expose ports
+EXPOSE 8080 8081 9100
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Start the application
+CMD ["./md_core_main", "config.json"]

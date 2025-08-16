@@ -1,0 +1,28 @@
+{
+  "network": {
+    "pubsub_port": 9100,
+    "ctrl_http_port": 8080,
+    "ws_metrics_port": 8081
+  },
+  "security": {
+    "token": "devtoken123"
+  },
+  "storage": {
+    "dir": "./data",
+    "roll_bytes": 2147483648,
+    "index_interval": 10000
+  },
+  "metrics": {
+    "histogram_buckets_ns": [100000, 500000, 1000000, 2000000, 5000000, 10000000]
+  },
+  "pipeline": {
+    "publisher_lanes": 8,
+    "recorder_fsync_ms": 50,
+    "normalizer_threads": 4
+  },
+  "feeds": {
+    "default_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT"],
+    "mock_enabled": true,
+    "binance_enabled": false
+  }
+}

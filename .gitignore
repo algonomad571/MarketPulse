@@ -1,0 +1,69 @@
+# Build directories
+build/
+cmake-build-*/
+
+# C++ artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data files
+data/
+*.mdf
+*.idx
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node.js
+ui/node_modules/
+ui/.next/
+ui/out/
+ui/.env.local
+ui/.env.development.local
+ui/.env.test.local
+ui/.env.production.local
+
+# Package managers
+package-lock.json
+yarn.lock
+
+# Docker
+.dockerignore
+
+# Temporary files
+tmp/
+temp/
+
+# Configuration overrides
+config.local.json
+*.local.json
+
+# Coverage and test reports
+coverage/
+test-reports/
+
+# Prometheus data
+prometheus-data/
+
+# Grafana data
+grafana-data/
+
+# ClickHouse data
+clickhouse-data/
+
+.bolt
