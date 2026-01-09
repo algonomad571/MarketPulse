@@ -44,6 +44,27 @@ A high-performance C++ market data processing system with real-time streaming, r
                    │ (rate ctrl)  │
                    └──────────────┘
 ```
+## Design Decisions & Trade-offs
+
+### Why Boost.Asio instead of raw epoll/kqueue?
+- Provides portable async I/O without sacrificing performance
+- Allows focus on pipeline and backpressure logic rather than OS-specific details
+- Still exposes low-level control over buffers and scheduling
+
+### Why lock-free queues (moodycamel) over mutex-based queues?
+- Avoids contention under high message rates
+- Predictable latency under bursty traffic
+- Reduced tail latency compared to std::queue + mutex
+
+### Why memory-mapped files for recording?
+- Sequential append with minimal syscall overhead
+- OS page cache handles buffering efficiently
+- Enables zero-copy reads during replay
+
+### Why custom binary protocol instead of Protobuf/FlatBuffers?
+- Fixed-size headers enable faster parsing
+- No schema negotiation overhead
+- Explicit control over alignment and endianness
 
 ## 🛠 Technology Stack
 
@@ -259,6 +280,25 @@ Pre-configured dashboards include:
   }
 }
 ```
+## Failure Handling & Guarantees
+
+### Backpressure
+- Publisher applies bounded queues per topic
+- When queues are full, producers slow down instead of dropping data
+
+### Crash Recovery
+- Memory-mapped files are flushed at configurable intervals
+- On restart, recorder replays last valid index
+- Partial frames are detected via CRC and discarded
+
+### Data Integrity
+- CRC32 validation on every frame
+- Corrupted frames are logged and skipped
+
+### Known Limitations
+- Single-node deployment (no replication)
+- TCP-based pub-sub assumes reliable connections
+- No exactly-once delivery across process restarts
 
 ## 🧪 Testing & Benchmarking
 
@@ -280,6 +320,14 @@ make test
 # Test file integrity after crashes
 ./scripts/chaos_test.sh
 ```
+
+### Benchmarking Methodology
+
+- Benchmarks executed on an 8-core x86_64 machine
+- CPU pinning enabled to reduce scheduler noise
+- Latencies measured from ingest → publish using monotonic clocks
+- P99 computed over 60-second steady-state windows
+- Burst tests simulate Poisson arrivals with configurable rates
 
 ## 📚 Documentation
 
