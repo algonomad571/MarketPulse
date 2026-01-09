@@ -1,4 +1,4 @@
-# Market Data Feed Handler + Replay System
+# MarketPulse — Low-Latency Market Data Ingestion & Replay System
 
 A high-performance C++ market data processing system with real-time streaming, recording, replay capabilities, and a modern web-based monitoring dashboard.
 
@@ -122,6 +122,41 @@ md-system-cpp/
 └── config.json                   # Runtime configuration
 ```
 
+## 📊 Binary Protocol
+
+### Frame Header (Little-Endian)
+```cpp
+struct FrameHeader {
+  uint32_t magic;     // 0x4D444146 ('MDAF')
+  uint16_t version;   // 1
+  uint16_t msg_type;  // 1=L1, 2=L2, 3=Trade, 4=Heartbeat
+  uint32_t body_len;  // bytes of body
+  uint32_t crc32;     // CRC32 of body
+};
+```
+
+### Message Bodies
+```cpp
+struct L1Body {
+  uint64_t ts_ns;
+  uint32_t symbol_id;
+  int64_t  bid_px, ask_px;     // scaled 1e-8
+  uint64_t bid_sz, ask_sz;     // scaled 1e-8
+  uint64_t seq;
+};
+
+struct L2Body {
+  uint64_t ts_ns;
+  uint32_t symbol_id;
+  uint8_t  side;        // 0=Bid, 1=Ask
+  uint8_t  action;      // 0=Insert, 1=Update, 2=Delete
+  uint16_t level;       // 0=best
+  int64_t  price;       // scaled 1e-8
+  uint64_t size;        // scaled 1e-8
+  uint64_t seq;
+};
+```
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -167,41 +202,6 @@ md-system-cpp/
    npm install
    npm run dev
    ```
-
-## 📊 Binary Protocol
-
-### Frame Header (Little-Endian)
-```cpp
-struct FrameHeader {
-  uint32_t magic;     // 0x4D444146 ('MDAF')
-  uint16_t version;   // 1
-  uint16_t msg_type;  // 1=L1, 2=L2, 3=Trade, 4=Heartbeat
-  uint32_t body_len;  // bytes of body
-  uint32_t crc32;     // CRC32 of body
-};
-```
-
-### Message Bodies
-```cpp
-struct L1Body {
-  uint64_t ts_ns;
-  uint32_t symbol_id;
-  int64_t  bid_px, ask_px;     // scaled 1e-8
-  uint64_t bid_sz, ask_sz;     // scaled 1e-8
-  uint64_t seq;
-};
-
-struct L2Body {
-  uint64_t ts_ns;
-  uint32_t symbol_id;
-  uint8_t  side;        // 0=Bid, 1=Ask
-  uint8_t  action;      // 0=Insert, 1=Update, 2=Delete
-  uint16_t level;       // 0=best
-  int64_t  price;       // scaled 1e-8
-  uint64_t size;        // scaled 1e-8
-  uint64_t seq;
-};
-```
 
 ## 🎮 Usage Examples
 
