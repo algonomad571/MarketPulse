@@ -9,6 +9,7 @@
 #include <functional>
 #include <mutex>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace md {
 
@@ -62,6 +63,12 @@ private:
     
     boost::beast::http::response<boost::beast::http::string_body> 
     handle_feeds_post(const std::string& body);
+
+    boost::beast::http::response<boost::beast::http::string_body>
+    handle_feeds_start(const nlohmann::json& body);
+
+    boost::beast::http::response<boost::beast::http::string_body>
+    handle_feeds_stop();
     
     boost::beast::http::response<boost::beast::http::string_body> 
     handle_replay_post(const std::string& body);
@@ -94,6 +101,9 @@ private:
     std::shared_ptr<Recorder> recorder_;
     std::shared_ptr<Replayer> replayer_;
     std::shared_ptr<SymbolRegistry> symbol_registry_;
+
+    // Serialize lifecycle actions that mutate feed state.
+    std::mutex feed_control_mutex_;
     
     // WebSocket metrics
     std::unique_ptr<std::jthread> metrics_thread_;

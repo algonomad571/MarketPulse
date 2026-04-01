@@ -10,6 +10,7 @@
 #include <boost/beast/websocket.hpp>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <sstream>
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -18,6 +19,26 @@ namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
 namespace md {
+
+namespace {
+
+http::response<http::string_body> make_json_response(
+    http::status status,
+    const nlohmann::json& body,
+    unsigned version,
+    bool keep_alive) {
+    http::response<http::string_body> res{status, version};
+    res.keep_alive(keep_alive);
+    res.set(http::field::content_type, "application/json");
+    res.set(http::field::access_control_allow_origin, "*");
+    res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+    res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
+    res.body() = body.dump();
+    res.prepare_payload();
+    return res;
+}
+
+} // namespace
 
 ControlServer::ControlServer(boost::asio::io_context& io_context,
                              uint16_t http_port,
@@ -65,7 +86,7 @@ void ControlServer::start() {
             http_server_loop(token);
         });
 
-        spdlog::info("ControlServer listening on HTTP port {} (/metrics only)", http_port_);
+        spdlog::info("ControlServer listening on HTTP port {}", http_port_);
     } catch (...) {
         running_.store(false);
         throw;
@@ -108,35 +129,81 @@ void ControlServer::handle_http_request(
     boost::beast::http::request<boost::beast::http::string_body>&& req,
     std::function<void(boost::beast::http::response<boost::beast::http::string_body>)> send) {
 
-    http::response<http::string_body> res;
-    res.version(req.version());
-    res.keep_alive(false);
+    const std::string target(req.target());
+    const std::string method_text(req.method_string());
+    const auto method = req.method();
+    spdlog::info("ControlServer request: method={} target={} body_bytes={}",
+                 method_text, target, req.body().size());
+
+    if (method == http::verb::options) {
+        http::response<http::string_body> res{http::status::no_content, req.version()};
+        res.keep_alive(req.keep_alive());
+        res.set(http::field::access_control_allow_origin, "*");
+        res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+        res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
+        return send(std::move(res));
+    }
+
+    http::response<http::string_body> res{http::status::not_found, req.version()};
+    res.keep_alive(req.keep_alive());
 
     try {
-        std::string target(req.target());
-        auto method = req.method();
-
         if (target == "/metrics" && method == http::verb::get) {
             res = handle_metrics();
+            res.version(req.version());
+            res.keep_alive(req.keep_alive());
+            res.set(http::field::access_control_allow_origin, "*");
+            res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+            res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
+            res.prepare_payload();
+        } else if (target == "/health" && method == http::verb::get) {
+            res = handle_health();
+            res.version(req.version());
+            res.keep_alive(req.keep_alive());
+            res.set(http::field::access_control_allow_origin, "*");
+            res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+            res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
+            res.prepare_payload();
+        } else if (target == "/feeds/start" && method == http::verb::post) {
+            try {
+                auto body = nlohmann::json::parse(req.body());
+                res = handle_feeds_start(body);
+            } catch (const nlohmann::json::parse_error& e) {
+                spdlog::warn("ControlServer invalid JSON on /feeds/start: {}", e.what());
+                res = make_json_response(
+                    http::status::bad_request,
+                    nlohmann::json{{"error", "Invalid JSON"}},
+                    req.version(),
+                    req.keep_alive());
+            }
+        } else if (target == "/feeds/stop" && method == http::verb::post) {
+            res = handle_feeds_stop();
         } else {
-            // 404 Not Found
-            res.result(http::status::not_found);
-            res.set(http::field::content_type, "text/plain");
-            res.body() = "Not Found\n";
+            res = make_json_response(
+                http::status::not_found,
+                nlohmann::json{{"error", "Not Found"}},
+                req.version(),
+                req.keep_alive());
         }
 
     } catch (const std::exception& e) {
-        // 500 Internal Server Error
-        res.result(http::status::internal_server_error);
-        res.set(http::field::content_type, "text/plain");
-        res.body() = "Internal Server Error\n";
-        spdlog::error("HTTP request error: {}", e.what());
+        spdlog::error("ControlServer internal error on {}: {}", target, e.what());
+        res = make_json_response(
+            http::status::internal_server_error,
+            nlohmann::json{{"error", "Internal Server Error"}},
+            req.version(),
+            req.keep_alive());
     }
 
+    res.version(req.version());
+    res.keep_alive(req.keep_alive());
     res.set(http::field::access_control_allow_origin, "*");
-    res.set(http::field::access_control_allow_methods, "GET");
+    res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
     res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
     res.prepare_payload();
+
+    spdlog::info("ControlServer response: method={} target={} status={}",
+                 method_text, target, static_cast<unsigned>(res.result()));
 
     send(std::move(res));
 }
@@ -156,7 +223,9 @@ void ControlServer::http_server_loop(std::stop_token token) {
                 continue;
             }
 
-            handle_http_session(std::move(socket));
+            std::thread([this, s = std::move(socket)]() mutable {
+                handle_http_session(std::move(s));
+            }).detach();
         } catch (const std::exception& e) {
             if (running_.load()) {
                 spdlog::error("ControlServer listener error: {}", e.what());
@@ -167,16 +236,19 @@ void ControlServer::http_server_loop(std::stop_token token) {
 
 void ControlServer::handle_http_session(tcp::socket socket) {
     beast::flat_buffer buffer;
-    http::request<http::string_body> req;
+    http::request_parser<http::string_body> parser;
+    parser.body_limit(64 * 1024);
     beast::error_code ec;
 
-    http::read(socket, buffer, req, ec);
+    http::read(socket, buffer, parser, ec);
     if (ec) {
         if (ec != http::error::end_of_stream) {
             spdlog::debug("ControlServer read error: {}", ec.message());
         }
         return;
     }
+
+    auto req = parser.release();
 
     auto send = [&](http::response<http::string_body> res) {
         http::write(socket, res, ec);
@@ -191,53 +263,78 @@ http::response<http::string_body> ControlServer::handle_health() {
     http::response<http::string_body> res;
     res.result(http::status::ok);
     res.set(http::field::content_type, "application/json");
-    
-    nlohmann::json health;
-    health["status"] = "ok";
-    health["timestamp"] = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    
-    // Component status
-    if (mock_feed_) {
-        const auto& stats = mock_feed_->get_stats();
-        health["components"]["mock_feed"] = {
-            {"l1_count", stats.l1_count.load()},
-            {"l2_count", stats.l2_count.load()},
-            {"trade_count", stats.trade_count.load()},
-            {"total_events", stats.total_events.load()}
-        };
-    }
-    
-    if (normalizer_) {
-        const auto& stats = normalizer_->get_stats();
-        health["components"]["normalizer"] = {
-            {"events_processed", stats.events_processed.load()},
-            {"frames_output", stats.frames_output.load()},
-            {"errors", stats.errors.load()}
-        };
-    }
-    
-    if (pub_server_) {
-        const auto& stats = pub_server_->get_stats();
-        health["components"]["publisher"] = {
-            {"total_connections", stats.total_connections.load()},
-            {"active_connections", stats.active_connections.load()},
-            {"frames_published", stats.frames_published.load()},
-            {"frames_dropped", stats.frames_dropped.load()}
-        };
-    }
-    
-    if (recorder_) {
-        const auto& stats = recorder_->get_stats();
-        health["components"]["recorder"] = {
-            {"frames_written", stats.frames_written.load()},
-            {"bytes_written", stats.bytes_written.load()},
-            {"is_recording", stats.is_recording.load()}
-        };
-    }
-    
-    res.body() = health.dump(2);
+    res.body() = nlohmann::json{{"status", "ok"}}.dump();
     return res;
+}
+
+http::response<http::string_body> ControlServer::handle_feeds_start(const nlohmann::json& body) {
+    std::lock_guard<std::mutex> lock(feed_control_mutex_);
+
+    if (!mock_feed_) {
+        return make_json_response(
+            http::status::service_unavailable,
+            nlohmann::json{{"error", "Feed not available"}},
+            11,
+            false);
+    }
+
+    if (!body.contains("l1_rate") || !body["l1_rate"].is_number() ||
+        !body.contains("l2_rate") || !body["l2_rate"].is_number() ||
+        !body.contains("trade_rate") || !body["trade_rate"].is_number()) {
+        return make_json_response(
+            http::status::bad_request,
+            nlohmann::json{{"error", "Invalid JSON: expected numeric l1_rate, l2_rate, trade_rate"}},
+            11,
+            false);
+    }
+
+    const double l1_rate_d = body["l1_rate"].get<double>();
+    const double l2_rate_d = body["l2_rate"].get<double>();
+    const double trade_rate_d = body["trade_rate"].get<double>();
+
+    if (l1_rate_d < 0.0 || l2_rate_d < 0.0 || trade_rate_d < 0.0) {
+        return make_json_response(
+            http::status::bad_request,
+            nlohmann::json{{"error", "Rates must be non-negative"}},
+            11,
+            false);
+    }
+
+    const auto l1_rate = static_cast<uint32_t>(l1_rate_d);
+    const auto l2_rate = static_cast<uint32_t>(l2_rate_d);
+    const auto trade_rate = static_cast<uint32_t>(trade_rate_d);
+
+    spdlog::info("Control action: feed start requested (l1_rate={}, l2_rate={}, trade_rate={})",
+                 l1_rate, l2_rate, trade_rate);
+    mock_feed_->set_rates(l1_rate, l2_rate, trade_rate);
+    mock_feed_->start();
+
+    return make_json_response(
+        http::status::ok,
+        nlohmann::json{{"status", "started"}},
+        11,
+        false);
+}
+
+http::response<http::string_body> ControlServer::handle_feeds_stop() {
+    std::lock_guard<std::mutex> lock(feed_control_mutex_);
+
+    if (!mock_feed_) {
+        return make_json_response(
+            http::status::service_unavailable,
+            nlohmann::json{{"error", "Feed not available"}},
+            11,
+            false);
+    }
+
+    spdlog::info("Control action: feed stop requested");
+    mock_feed_->stop();
+
+    return make_json_response(
+        http::status::ok,
+        nlohmann::json{{"status", "stopped"}},
+        11,
+        false);
 }
 
 http::response<http::string_body> ControlServer::handle_symbols_get() {
