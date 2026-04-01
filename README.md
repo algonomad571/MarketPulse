@@ -1,4 +1,4 @@
-# Market Data Feed Handler + Replay System
+# MarketPulse — Low-Latency Market Data Ingestion & Replay System
 
 A high-performance C++ market data processing system with real-time streaming, recording, replay capabilities, and a modern web-based monitoring dashboard.
 
@@ -44,6 +44,27 @@ A high-performance C++ market data processing system with real-time streaming, r
                    │ (rate ctrl)  │
                    └──────────────┘
 ```
+## Design Decisions & Trade-offs
+
+### Why Boost.Asio instead of raw epoll/kqueue?
+- Provides portable async I/O without sacrificing performance
+- Allows focus on pipeline and backpressure logic rather than OS-specific details
+- Still exposes low-level control over buffers and scheduling
+
+### Why lock-free queues (moodycamel) over mutex-based queues?
+- Avoids contention under high message rates
+- Predictable latency under bursty traffic
+- Reduced tail latency compared to std::queue + mutex
+
+### Why memory-mapped files for recording?
+- Sequential append with minimal syscall overhead
+- OS page cache handles buffering efficiently
+- Enables zero-copy reads during replay
+
+### Why custom binary protocol instead of Protobuf/FlatBuffers?
+- Fixed-size headers enable faster parsing
+- No schema negotiation overhead
+- Explicit control over alignment and endianness
 
 ## 🛠 Technology Stack
 
@@ -101,6 +122,41 @@ md-system-cpp/
 └── config.json                   # Runtime configuration
 ```
 
+## 📊 Binary Protocol
+
+### Frame Header (Little-Endian)
+```cpp
+struct FrameHeader {
+  uint32_t magic;     // 0x4D444146 ('MDAF')
+  uint16_t version;   // 1
+  uint16_t msg_type;  // 1=L1, 2=L2, 3=Trade, 4=Heartbeat
+  uint32_t body_len;  // bytes of body
+  uint32_t crc32;     // CRC32 of body
+};
+```
+
+### Message Bodies
+```cpp
+struct L1Body {
+  uint64_t ts_ns;
+  uint32_t symbol_id;
+  int64_t  bid_px, ask_px;     // scaled 1e-8
+  uint64_t bid_sz, ask_sz;     // scaled 1e-8
+  uint64_t seq;
+};
+
+struct L2Body {
+  uint64_t ts_ns;
+  uint32_t symbol_id;
+  uint8_t  side;        // 0=Bid, 1=Ask
+  uint8_t  action;      // 0=Insert, 1=Update, 2=Delete
+  uint16_t level;       // 0=best
+  int64_t  price;       // scaled 1e-8
+  uint64_t size;        // scaled 1e-8
+  uint64_t seq;
+};
+```
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -146,41 +202,6 @@ md-system-cpp/
    npm install
    npm run dev
    ```
-
-## 📊 Binary Protocol
-
-### Frame Header (Little-Endian)
-```cpp
-struct FrameHeader {
-  uint32_t magic;     // 0x4D444146 ('MDAF')
-  uint16_t version;   // 1
-  uint16_t msg_type;  // 1=L1, 2=L2, 3=Trade, 4=Heartbeat
-  uint32_t body_len;  // bytes of body
-  uint32_t crc32;     // CRC32 of body
-};
-```
-
-### Message Bodies
-```cpp
-struct L1Body {
-  uint64_t ts_ns;
-  uint32_t symbol_id;
-  int64_t  bid_px, ask_px;     // scaled 1e-8
-  uint64_t bid_sz, ask_sz;     // scaled 1e-8
-  uint64_t seq;
-};
-
-struct L2Body {
-  uint64_t ts_ns;
-  uint32_t symbol_id;
-  uint8_t  side;        // 0=Bid, 1=Ask
-  uint8_t  action;      // 0=Insert, 1=Update, 2=Delete
-  uint16_t level;       // 0=best
-  int64_t  price;       // scaled 1e-8
-  uint64_t size;        // scaled 1e-8
-  uint64_t seq;
-};
-```
 
 ## 🎮 Usage Examples
 
@@ -259,6 +280,25 @@ Pre-configured dashboards include:
   }
 }
 ```
+## Failure Handling & Guarantees
+
+### Backpressure
+- Publisher applies bounded queues per topic
+- When queues are full, producers slow down instead of dropping data
+
+### Crash Recovery
+- Memory-mapped files are flushed at configurable intervals
+- On restart, recorder replays last valid index
+- Partial frames are detected via CRC and discarded
+
+### Data Integrity
+- CRC32 validation on every frame
+- Corrupted frames are logged and skipped
+
+### Known Limitations
+- Single-node deployment (no replication)
+- TCP-based pub-sub assumes reliable connections
+- No exactly-once delivery across process restarts
 
 ## 🧪 Testing & Benchmarking
 
@@ -280,6 +320,14 @@ make test
 # Test file integrity after crashes
 ./scripts/chaos_test.sh
 ```
+
+### Benchmarking Methodology
+
+- Benchmarks executed on an 8-core x86_64 machine
+- CPU pinning enabled to reduce scheduler noise
+- Latencies measured from ingest → publish using monotonic clocks
+- P99 computed over 60-second steady-state windows
+- Burst tests simulate Poisson arrivals with configurable rates
 
 ## 📚 Documentation
 
