@@ -1,5 +1,6 @@
 #include "replayer.hpp"
 #include "../publisher/pub_server.hpp"
+#include "../common/symbol_registry.hpp"
 #include "../common/metrics.hpp"
 #include <spdlog/spdlog.h>
 #include <filesystem>
@@ -10,8 +11,10 @@
 
 namespace md {
 
-Replayer::Replayer(const std::string& data_dir, std::shared_ptr<PubServer> publisher)
-    : data_dir_(data_dir), publisher_(publisher) {
+Replayer::Replayer(const std::string& data_dir, 
+                   std::shared_ptr<PubServer> publisher,
+                   std::shared_ptr<class SymbolRegistry> symbol_registry)
+    : data_dir_(data_dir), publisher_(publisher), symbol_registry_(symbol_registry) {
 }
 
 Replayer::~Replayer() {
@@ -243,7 +246,12 @@ void Replayer::playback_thread(const std::string& session_id) {
         // Extract timestamp from frame
         uint64_t frame_timestamp_ns = 0;
         std::visit([&frame_timestamp_ns](const auto& body) {
-            frame_timestamp_ns = body.ts_ns;
+            using T = std::decay_t<decltype(body)>;
+            if constexpr (std::is_same_v<T, L1Body> || std::is_same_v<T, L2Body> || std::is_same_v<T, TradeBody> || std::is_same_v<T, HbBody>) {
+                frame_timestamp_ns = body.ts_ns;
+            } else {
+                frame_timestamp_ns = 0;
+            }
         }, frame.body);
         
         // Check if we've reached the end time
@@ -274,14 +282,27 @@ void Replayer::playback_thread(const std::string& session_id) {
         
         // Determine topic and publish
         std::string base_topic;
-        std::visit([&base_topic, session](const auto& body) {
-            if constexpr (std::is_same_v<std::decay_t<decltype(body)>, L1Body>) {
-                // Get symbol name from symbol registry (we'd need a reference to it)
-                base_topic = "l1.UNKNOWN"; // TODO: resolve symbol ID to name
-            } else if constexpr (std::is_same_v<std::decay_t<decltype(body)>, L2Body>) {
-                base_topic = "l2.UNKNOWN";
-            } else if constexpr (std::is_same_v<std::decay_t<decltype(body)>, TradeBody>) {
-                base_topic = "trade.UNKNOWN";
+        std::visit([&base_topic, session, this](const auto& body) {
+            std::string symbol = "UNKNOWN";
+            using T = std::decay_t<decltype(body)>;
+
+            if constexpr (std::is_same_v<T, L1Body> || std::is_same_v<T, L2Body> || std::is_same_v<T, TradeBody>) {
+                if (symbol_registry_) {
+                    auto sym_view = symbol_registry_->by_id(body.symbol_id);
+                    if (!sym_view.empty()) {
+                        symbol = std::string(sym_view);
+                    }
+                }
+            }
+
+            if constexpr (std::is_same_v<T, L1Body>) {
+                base_topic = "l1." + symbol;
+            } else if constexpr (std::is_same_v<T, L2Body>) {
+                base_topic = "l2." + symbol;
+            } else if constexpr (std::is_same_v<T, TradeBody>) {
+                base_topic = "trade." + symbol;
+            } else {
+                base_topic.clear();
             }
         }, frame.body);
         

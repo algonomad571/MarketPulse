@@ -1,0 +1,9 @@
+Package: boost-hana
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-cmake, boost-config, boost-core, boost-fusion, boost-headers, boost-mpl, boost-tuple
+Architecture: x64-windows
+Multi-Arch: same
+Abi: b9e932829b24f1459d5b3f62b0bffb25e0a625cb2959380453aac5e019d9d06c
+Description: Boost hana module
+Status: install ok installed

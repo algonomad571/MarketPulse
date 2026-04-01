@@ -1,0 +1,16 @@
+x64-windows/
+x64-windows/include/
+x64-windows/include/boost/
+x64-windows/include/boost/logic/
+x64-windows/include/boost/logic/tribool.hpp
+x64-windows/include/boost/logic/tribool_fwd.hpp
+x64-windows/include/boost/logic/tribool_io.hpp
+x64-windows/share/
+x64-windows/share/boost-logic/
+x64-windows/share/boost-logic/copyright
+x64-windows/share/boost-logic/vcpkg.spdx.json
+x64-windows/share/boost-logic/vcpkg_abi_info.txt
+x64-windows/share/boost_logic/
+x64-windows/share/boost_logic/boost_logic-config-version.cmake
+x64-windows/share/boost_logic/boost_logic-config.cmake
+x64-windows/share/boost_logic/boost_logic-targets.cmake

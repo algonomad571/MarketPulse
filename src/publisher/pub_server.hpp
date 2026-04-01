@@ -1,5 +1,27 @@
 #pragma once
 
+// Publisher: TCP pub-sub server for real-time market data distribution
+// 
+// ASSUMPTIONS:
+// - Any TCP write taking >5 seconds indicates a stalled connection
+// - Maximum 1000 concurrent connections is sufficient
+// - Clients can handle drops for non-lossless subscriptions
+// 
+// FAILURE MODES:
+// - Slow/stalled clients → disconnected after 5 consecutive write failures
+// - Connection limit reached → new connections rejected with metric
+// - Network errors → classified and logged appropriately
+// 
+// LIMITATIONS:
+// - Lossless subscriptions drop frames (no true backpressure yet)
+// - No per-IP connection limits (global limit only)
+// - No authentication rate limiting
+// 
+// RECOVERY:
+// - Monitor publisher_write_errors_total
+// - Check publisher_connections_rejected_total
+// - Review client behavior if drop rates high
+
 #include "../common/frame.hpp"
 #include <boost/asio.hpp>
 #include <memory>
@@ -11,12 +33,8 @@
 #include <thread>
 #include <mutex>
 #include <regex>
-
-// Forward declarations
-namespace moodycamel {
-    template<typename T>
-    class ConcurrentQueue;
-}
+#include <optional>
+#include <concurrentqueue.h>
 
 namespace md {
 
@@ -29,7 +47,7 @@ struct TopicSubscription {
     TopicSubscription(const std::string& pattern, bool lossless);
 };
 
-class ClientConnection {
+class ClientConnection : public std::enable_shared_from_this<ClientConnection> {
 public:
     ClientConnection(boost::asio::ip::tcp::socket socket, 
                      const std::string& auth_token);
@@ -70,6 +88,7 @@ private:
     
     // Buffer management
     std::vector<std::byte> write_buffer_;
+    std::string read_buffer_;
     static constexpr size_t MAX_QUEUE_SIZE = 10000;
     
     std::atomic<uint64_t> frames_sent_{0};
@@ -100,6 +119,9 @@ public:
     
     const Stats& get_stats() const { return stats_; }
     std::vector<std::string> get_active_clients() const;
+    
+    // Get latest frame for a topic (for API queries)
+    std::optional<Frame> get_latest_frame(const std::string& topic) const;
 
 private:
     void accept_connections();
@@ -114,10 +136,15 @@ private:
     
     std::atomic<bool> running_{false};
     std::vector<std::shared_ptr<ClientConnection>> clients_;
-    std::mutex clients_mutex_;
+    mutable std::mutex clients_mutex_;
     
     std::unordered_set<std::string> virtual_topic_prefixes_;
     std::mutex prefixes_mutex_;
+    
+    // Latest frame cache (for API queries)
+    std::unordered_map<std::string, Frame> latest_frames_;
+    mutable std::mutex latest_frames_mutex_;
+    static constexpr size_t MAX_CACHED_TOPICS = 10000;
     
     std::unique_ptr<std::jthread> heartbeat_thread_;
     Stats stats_;

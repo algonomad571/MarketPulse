@@ -1,0 +1,9 @@
+Package: boost-url
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-align, boost-assert, boost-cmake, boost-config, boost-core, boost-headers, boost-mp11, boost-optional, boost-system, boost-throw-exception, boost-type-traits, boost-variant2
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 61b9b323eb3569cfcf3277b0369d2cd11ed6b777b5cd15227e4f8ba06bcaf86e
+Description: Boost url module
+Status: install ok installed

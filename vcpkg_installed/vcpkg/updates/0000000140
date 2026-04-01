@@ -1,0 +1,9 @@
+Package: boost-wave
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-assert, boost-cmake, boost-concept-check, boost-config, boost-core, boost-filesystem, boost-format, boost-headers, boost-iterator, boost-lexical-cast, boost-mpl, boost-multi-index, boost-optional, boost-pool, boost-preprocessor, boost-serialization, boost-smart-ptr, boost-spirit, boost-static-assert, boost-throw-exception, boost-type-traits
+Architecture: x64-windows
+Multi-Arch: same
+Abi: efc179600c56c80a2dba9b30bc2597cf88a3594e94ba4ed014a0b787472267eb
+Description: Boost wave module
+Status: install ok half-installed

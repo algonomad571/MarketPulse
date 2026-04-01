@@ -7,12 +7,7 @@
 #include <vector>
 #include <random>
 #include <chrono>
-
-// Forward declare for lock-free queue
-namespace moodycamel {
-    template<typename T>
-    class ConcurrentQueue;
-}
+#include <concurrentqueue.h>
 
 namespace md {
 

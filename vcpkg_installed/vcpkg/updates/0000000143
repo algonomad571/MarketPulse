@@ -1,0 +1,9 @@
+Package: boost-vmd
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-cmake, boost-config, boost-headers, boost-preprocessor
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 62901278a8d363e987a2f107aed958c3476d58ded0e550727c9f5388994e4a6e
+Description: Boost vmd module
+Status: install ok installed

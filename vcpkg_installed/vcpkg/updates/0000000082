@@ -1,0 +1,9 @@
+Package: boost-concept-check
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-cmake, boost-config, boost-headers, boost-preprocessor, boost-static-assert, boost-type-traits
+Architecture: x64-windows
+Multi-Arch: same
+Abi: d076009517eb5bea61077e28e696a2f9058e4b0190907e2fe1d8616ec1538e8b
+Description: Boost concept_check module
+Status: install ok half-installed

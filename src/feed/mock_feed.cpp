@@ -192,6 +192,8 @@ void MockFeed::generate_l1_event(const std::string& symbol) {
     output_queue_->enqueue(event);
     stats_.l1_count.fetch_add(1);
     stats_.total_events.fetch_add(1);
+    MetricsCollector::instance().increment_counter("feed_events_ingested_total");
+    MetricsCollector::instance().increment_counter("feed_l1_events_total");
     
     MetricsCollector::instance().increment_counter("mock_feed_l1_total");
 }
@@ -249,6 +251,8 @@ void MockFeed::generate_l2_event(const std::string& symbol) {
     output_queue_->enqueue(event);
     stats_.l2_count.fetch_add(1);
     stats_.total_events.fetch_add(1);
+    MetricsCollector::instance().increment_counter("feed_events_ingested_total");
+    MetricsCollector::instance().increment_counter("feed_l2_events_total");
     
     MetricsCollector::instance().increment_counter("mock_feed_l2_total");
 }
@@ -272,6 +276,8 @@ void MockFeed::generate_trade_event(const std::string& symbol) {
     output_queue_->enqueue(event);
     stats_.trade_count.fetch_add(1);
     stats_.total_events.fetch_add(1);
+    MetricsCollector::instance().increment_counter("feed_events_ingested_total");
+    MetricsCollector::instance().increment_counter("feed_trade_events_total");
     
     MetricsCollector::instance().increment_counter("mock_feed_trade_total");
 }

@@ -3,6 +3,28 @@
 #include <concurrentqueue.h>
 #include <spdlog/spdlog.h>
 
+// Normalizer: Event processing component
+// 
+// ASSUMPTIONS:
+// - Symbol registry is thread-safe (uses internal mutex)
+// - Output queue has sufficient capacity (dynamic growth)
+// - Event processing errors are non-fatal (log and continue)
+// 
+// FAILURE MODES:
+// - Normalization exceptions → logged, metrics incremented, continue
+// - Enqueue failures → extremely rare with dynamic queues, logged if occurs
+// - Queue full → enqueue returns false (tracked via metrics)
+// 
+// LIMITATIONS:
+// - No timeout on enqueue operations
+// - Failed events are dropped (not retried)
+// - Multiple threads share queues (lock-free, no ordering guarantee)
+// 
+// RECOVERY:
+// - Monitor normalizer_failures_total
+// - Check normalizer_enqueue_failures_total (should be 0)
+// - Review error logs for specific failure patterns
+
 namespace md {
 
 namespace {
@@ -58,14 +80,20 @@ void Normalizer::stop() {
 }
 
 void Normalizer::worker_thread() {
-    RawEvent event;
     const size_t batch_size = 100;
     std::vector<RawEvent> events_batch;
     events_batch.reserve(batch_size);
+    auto last_log_time = std::chrono::steady_clock::now();
+    uint64_t processed_since_log = 0;
     
     while (running_.load()) {
-        // Try to dequeue in batches for better performance
-        size_t dequeued = input_queue_->try_dequeue_bulk(events_batch.data(), batch_size);
+        events_batch.clear();
+        RawEvent event;
+        while (events_batch.size() < batch_size && input_queue_->try_dequeue(event)) {
+            events_batch.push_back(std::move(event));
+        }
+
+        size_t dequeued = events_batch.size();
         
         if (dequeued == 0) {
             // No events available, sleep briefly
@@ -75,23 +103,49 @@ void Normalizer::worker_thread() {
         
         // Process batch
         for (size_t i = 0; i < dequeued; ++i) {
-            MEASURE_LATENCY("normalize_event_ns");
+            MEASURE_LATENCY("normalizer_event_latency_ns");
             
             try {
                 Frame frame = normalize_event(events_batch[i]);
-                output_queue_->enqueue(std::move(frame));
                 
-                stats_.frames_output.fetch_add(1);
+                // HARDENING: Queue enqueue is lock-free and always succeeds
+                // ASSUMPTION: Output queue has sufficient capacity
+                // LIMITATION: If queue is full, enqueue may fail silently in lock-free implementation
+                // NOTE: moodycamel::ConcurrentQueue grows dynamically, enqueue rarely fails
+                bool enqueued = output_queue_->enqueue(std::move(frame));
+                if (!enqueued) {
+                    spdlog::error("Failed to enqueue normalized frame (queue full?)");
+                    stats_.errors.fetch_add(1);
+                    MetricsCollector::instance().increment_counter("normalizer_enqueue_failures_total");
+                } else {
+                    stats_.frames_output.fetch_add(1);
+                }
             } catch (const std::exception& e) {
                 spdlog::warn("Failed to normalize event: {}", e.what());
                 stats_.errors.fetch_add(1);
                 MetricsCollector::instance().increment_counter("normalizer_errors_total");
+                MetricsCollector::instance().increment_counter("normalizer_failures_total");
             }
             
             stats_.events_processed.fetch_add(1);
         }
         
         MetricsCollector::instance().increment_counter("normalizer_events_total", dequeued);
+
+        processed_since_log += dequeued;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_log_time >= std::chrono::seconds(5)) {
+            spdlog::info(
+                "Flow[Normalizer] processed={} in_approx={} out_approx={} total_processed={} total_output={} errors={}",
+                processed_since_log,
+                input_queue_->size_approx(),
+                output_queue_->size_approx(),
+                stats_.events_processed.load(),
+                stats_.frames_output.load(),
+                stats_.errors.load());
+            processed_since_log = 0;
+            last_log_time = now;
+        }
     }
 }
 

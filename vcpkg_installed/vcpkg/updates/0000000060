@@ -1,0 +1,9 @@
+Package: boost-yap
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-cmake, boost-config, boost-hana, boost-headers, boost-preprocessor, boost-type-index
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 7b23b7ec8bc8834aab63e3f51c250d01abf66b7c283f90dd27a8a81ec7197f29
+Description: Boost yap module
+Status: install ok half-installed

@@ -5,6 +5,8 @@
 #include <variant>
 #include <memory>
 #include <cstring>
+#include <vector>
+#include <optional>
 
 namespace md {
 

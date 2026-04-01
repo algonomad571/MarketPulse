@@ -1,0 +1,9 @@
+Package: boost-format
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-assert, boost-cmake, boost-config, boost-core, boost-headers, boost-optional, boost-smart-ptr, boost-throw-exception, boost-utility
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 3c68667234bcbbcd1b82f98666450dfee37d6607116d19c81e21949f08d6652a
+Description: Boost format module
+Status: install ok installed

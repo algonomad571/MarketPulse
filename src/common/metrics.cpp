@@ -6,8 +6,7 @@
 namespace md {
 
 LatencyHistogram::LatencyHistogram(const std::vector<uint64_t>& buckets_ns) 
-    : buckets_(buckets_ns) {
-    counts_.resize(buckets_.size() + 1);  // +1 for overflow bucket
+    : buckets_(buckets_ns), counts_(buckets_ns.size() + 1) {
     for (auto& count : counts_) {
         count.store(0);
     }

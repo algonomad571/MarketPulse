@@ -1,0 +1,9 @@
+Package: boost-units
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-assert, boost-cmake, boost-config, boost-core, boost-headers, boost-integer, boost-io, boost-lambda, boost-math, boost-mpl, boost-preprocessor, boost-static-assert, boost-type-traits, boost-typeof
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 2bf47befee6ddf0482cee6f3e6676b059ca69f45007c19a2f9be6cc757ded359
+Description: Boost units module
+Status: install ok installed

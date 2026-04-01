@@ -1,0 +1,9 @@
+Package: boost-uuid
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-assert, boost-cmake, boost-config, boost-headers, boost-throw-exception, boost-type-traits
+Architecture: x64-windows
+Multi-Arch: same
+Abi: be6c67c8cd1cde3f22d6f024cc6fa169e67307fe285109b8d14639fc07fa9ea3
+Description: Boost uuid module
+Status: install ok installed

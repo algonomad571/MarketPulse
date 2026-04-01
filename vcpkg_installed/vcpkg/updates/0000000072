@@ -1,0 +1,9 @@
+Package: boost-system
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-assert, boost-cmake, boost-config, boost-headers, boost-throw-exception, boost-variant2, boost-winapi
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 6c0db917b73943c3c58c54a9d2a1bd5faa3ea73804466deb9a6fe0cfe1630d9e
+Description: Boost system module
+Status: install ok half-installed

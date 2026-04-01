@@ -1,0 +1,9 @@
+Package: boost-pool
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-assert, boost-cmake, boost-config, boost-headers, boost-integer, boost-throw-exception, boost-type-traits, boost-winapi
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 4d3ef669220e66b5796715956f05d791ba8e0cdb2d5e51558a252904297a407b
+Description: Boost pool module
+Status: install ok installed

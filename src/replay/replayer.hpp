@@ -43,7 +43,9 @@ struct ReplaySession {
 
 class Replayer {
 public:
-    explicit Replayer(const std::string& data_dir, std::shared_ptr<PubServer> publisher);
+    explicit Replayer(const std::string& data_dir, 
+                      std::shared_ptr<PubServer> publisher,
+                      std::shared_ptr<class SymbolRegistry> symbol_registry = nullptr);
     ~Replayer();
     
     // Session management
@@ -98,6 +100,7 @@ private:
     
     std::string data_dir_;
     std::shared_ptr<PubServer> publisher_;
+    std::shared_ptr<class SymbolRegistry> symbol_registry_;
     
     std::unordered_map<std::string, std::shared_ptr<ReplaySession>> sessions_;
     mutable std::mutex sessions_mutex_;

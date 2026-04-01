@@ -7,12 +7,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
-
-// Forward declarations
-namespace moodycamel {
-    template<typename T>
-    class ConcurrentQueue;
-}
+#include <concurrentqueue.h>
 
 namespace md {
 

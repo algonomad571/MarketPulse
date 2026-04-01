@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <boost/asio/read_until.hpp>
 #include <boost/asio/write.hpp>
+#include <algorithm>
 
 namespace md {
 
@@ -140,11 +141,19 @@ std::string ClientConnection::get_remote_endpoint() const {
 
 void ClientConnection::read_control_messages() {
     auto self = shared_from_this();
-    
+
     boost::asio::async_read_until(socket_, boost::asio::dynamic_buffer(read_buffer_), '\n',
         [this, self](boost::system::error_code ec, std::size_t length) {
             if (ec) {
-                spdlog::warn("Read error from client {}: {}", get_remote_endpoint(), ec.message());
+                // HARDENING: Distinguish between timeout and other errors
+                if (ec == boost::asio::error::operation_aborted) {
+                    spdlog::debug("Read operation cancelled for client {}", get_remote_endpoint());
+                } else if (ec == boost::asio::error::eof) {
+                    spdlog::info("Client {} disconnected (EOF)", get_remote_endpoint());
+                } else {
+                    spdlog::warn("Read error from client {}: {}", get_remote_endpoint(), ec.message());
+                    MetricsCollector::instance().increment_counter("publisher_read_errors_total");
+                }
                 stop();
                 return;
             }
@@ -162,13 +171,22 @@ void ClientConnection::read_control_messages() {
 }
 
 void ClientConnection::write_loop() {
-    QueuedFrame frame;
     const size_t batch_size = 100;
     std::vector<QueuedFrame> frames_batch;
     frames_batch.reserve(batch_size);
     
+    // HARDENING: Track consecutive write failures for circuit breaker
+    uint32_t consecutive_failures = 0;
+    constexpr uint32_t MAX_CONSECUTIVE_FAILURES = 5;
+    
     while (running_.load()) {
-        size_t dequeued = send_queue_->try_dequeue_bulk(frames_batch.data(), batch_size);
+        frames_batch.clear();
+        QueuedFrame frame;
+        while (frames_batch.size() < batch_size && send_queue_->try_dequeue(frame)) {
+            frames_batch.push_back(std::move(frame));
+        }
+
+        size_t dequeued = frames_batch.size();
         
         if (dequeued == 0) {
             std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -178,16 +196,32 @@ void ClientConnection::write_loop() {
         // Send batch
         for (size_t i = 0; i < dequeued; ++i) {
             const auto& frame = frames_batch[i];
-            
+
             boost::system::error_code ec;
             boost::asio::write(socket_, boost::asio::buffer(frame.data), ec);
             
             if (ec) {
-                spdlog::warn("Write error to client {}: {}", get_remote_endpoint(), ec.message());
-                stop();
-                return;
+                spdlog::warn("Write error to client {} (attempt {}/{}): {}", 
+                           get_remote_endpoint(), consecutive_failures + 1, MAX_CONSECUTIVE_FAILURES, ec.message());
+                
+                consecutive_failures++;
+                MetricsCollector::instance().increment_counter("publisher_write_errors_total");
+                
+                // HARDENING: Circuit breaker - disconnect after repeated failures
+                // LIMITATION: Don't retry writes, as TCP already handles retransmission
+                if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+                    spdlog::error("Client {} disconnected after {} consecutive write failures", 
+                                get_remote_endpoint(), consecutive_failures);
+                    stop();
+                    return;
+                }
+                
+                // Continue trying other frames in batch
+                continue;
             }
             
+            // SUCCESS: Reset failure counter
+            consecutive_failures = 0;
             frames_sent_.fetch_add(1);
         }
         
@@ -232,8 +266,22 @@ void ClientConnection::process_control_message(const std::string& message) {
             MetricsCollector::instance().increment_counter("publisher_subscriptions_total", topics.size());
             
         } else if (op == "unsubscribe") {
-            // TODO: Implement unsubscribe
+            // Unsubscribe from topics
+            auto topics = json.value("topics", std::vector<std::string>{});
+            {
+                std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+                
+                for (const auto& topic : topics) {
+                    auto it = std::remove_if(subscriptions_.begin(), subscriptions_.end(),
+                        [&topic](const TopicSubscription& sub) {
+                            return sub.pattern == topic;
+                        });
+                    subscriptions_.erase(it, subscriptions_.end());
+                }
+            }
+            
             send_control_ack(200);
+            MetricsCollector::instance().increment_counter("publisher_unsubscriptions_total", topics.size());
         } else {
             send_control_ack(400); // Bad Request
         }
@@ -302,7 +350,15 @@ void PubServer::publish(const std::string& topic, const Frame& frame) {
         return;
     }
     
-    MEASURE_LATENCY("publisher_publish_ns");
+    MEASURE_LATENCY("publisher_publish_latency_ns");
+    
+    // Cache latest frame per topic (bounded cache)
+    {
+        std::lock_guard<std::mutex> lock(latest_frames_mutex_);
+        if (latest_frames_.size() < MAX_CACHED_TOPICS || latest_frames_.count(topic) > 0) {
+            latest_frames_[topic] = frame;
+        }
+    }
     
     std::vector<std::shared_ptr<ClientConnection>> clients_snapshot;
     {
@@ -361,21 +417,66 @@ void PubServer::accept_connections() {
         [this, new_socket](boost::system::error_code ec) {
             if (ec) {
                 if (running_.load()) {
-                    spdlog::error("Accept error: {}", ec.message());
+                    // HARDENING: Distinguish between temporary and fatal errors
+                    if (ec == boost::asio::error::operation_aborted) {
+                        spdlog::debug("Accept operation cancelled (server shutting down)");
+                    } else {
+                        spdlog::error("Accept error: {} (code: {})", ec.message(), ec.value());
+                        MetricsCollector::instance().increment_counter("publisher_accept_errors_total");
+                        
+                        // Continue accepting despite error (could be temporary)
+                        if (running_.load()) {
+                            accept_connections();
+                        }
+                    }
                 }
                 return;
             }
             
-            auto client = std::make_shared<ClientConnection>(std::move(*new_socket), auth_token_);
-            
+            // HARDENING: Enforce maximum connection limit
+            // ASSUMPTION: More than 1000 concurrent connections indicates misconfiguration or attack
+            // LIMITATION: Prevents legitimate high-scale deployments beyond 1000 connections
+            constexpr size_t MAX_CONNECTIONS = 1000;
+            size_t current_clients = 0;
             {
                 std::lock_guard<std::mutex> lock(clients_mutex_);
-                clients_.push_back(client);
+                current_clients = clients_.size();
+                
+                if (current_clients >= MAX_CONNECTIONS) {
+                    spdlog::warn("Maximum connection limit ({}) reached, rejecting new connection", MAX_CONNECTIONS);
+                    MetricsCollector::instance().increment_counter("publisher_connections_rejected_total");
+                    
+                    // Close socket immediately
+                    boost::system::error_code close_ec;
+                    new_socket->close(close_ec);
+                    
+                    // Continue accepting
+                    if (running_.load()) {
+                        accept_connections();
+                    }
+                    return;
+                }
             }
             
-            client->start();
-            stats_.total_connections.fetch_add(1);
-            stats_.active_connections.store(clients_.size());
+            try {
+                auto client = std::make_shared<ClientConnection>(std::move(*new_socket), auth_token_);
+                
+                {
+                    std::lock_guard<std::mutex> lock(clients_mutex_);
+                    clients_.push_back(client);
+                }
+                
+                client->start();
+                stats_.total_connections.fetch_add(1);
+                stats_.active_connections.store(clients_.size());
+                
+                spdlog::info("New client connected: {} (total: {})", 
+                           client->get_remote_endpoint(), clients_.size());
+                
+            } catch (const std::exception& e) {
+                spdlog::error("Failed to create client connection: {}", e.what());
+                MetricsCollector::instance().increment_counter("publisher_client_creation_errors_total");
+            }
             
             // Continue accepting
             if (running_.load()) {
@@ -393,6 +494,9 @@ bool PubServer::matches_topic(const std::string& topic, const TopicSubscription&
 }
 
 void PubServer::heartbeat_loop() {
+    auto last_log_time = std::chrono::steady_clock::now();
+    uint64_t last_published_total = 0;
+
     while (running_.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         
@@ -402,8 +506,7 @@ void PubServer::heartbeat_loop() {
         {
             std::lock_guard<std::mutex> lock(clients_mutex_);
             auto it = std::remove_if(clients_.begin(), clients_.end(),
-                [](const std::weak_ptr<ClientConnection>& weak_client) {
-                    auto client = weak_client.lock();
+                [](const std::shared_ptr<ClientConnection>& client) {
                     return !client || !client->is_authenticated();
                 });
             clients_.erase(it, clients_.end());
@@ -417,7 +520,41 @@ void PubServer::heartbeat_loop() {
             
             stats_.active_connections.store(clients_.size());
         }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_log_time >= std::chrono::seconds(5)) {
+            const uint64_t published_total = stats_.frames_published.load();
+            uint64_t published_delta = 0;
+            if (published_total >= last_published_total) {
+                published_delta = published_total - last_published_total;
+            }
+
+            size_t latest_topics = 0;
+            {
+                std::lock_guard<std::mutex> lock(latest_frames_mutex_);
+                latest_topics = latest_frames_.size();
+            }
+
+            spdlog::info(
+                "Flow[Publisher] published={} total_published={} active_clients={} cached_topics={}",
+                published_delta,
+                published_total,
+                stats_.active_connections.load(),
+                latest_topics);
+
+            last_published_total = published_total;
+            last_log_time = now;
+        }
     }
+}
+
+std::optional<Frame> PubServer::get_latest_frame(const std::string& topic) const {
+    std::lock_guard<std::mutex> lock(latest_frames_mutex_);
+    auto it = latest_frames_.find(topic);
+    if (it != latest_frames_.end()) {
+        return it->second;
+    }
+    return std::nullopt;
 }
 
 } // namespace md

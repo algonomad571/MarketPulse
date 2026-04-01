@@ -6,6 +6,9 @@
 #include <string>
 #include <atomic>
 #include <thread>
+#include <functional>
+#include <mutex>
+#include <vector>
 
 namespace md {
 
@@ -38,6 +41,12 @@ public:
     void set_symbol_registry(std::shared_ptr<SymbolRegistry> symbol_registry) { symbol_registry_ = symbol_registry; }
 
 private:
+    using tcp = boost::asio::ip::tcp;
+
+    // Minimal HTTP server lifecycle
+    void http_server_loop(std::stop_token token);
+    void handle_http_session(tcp::socket socket);
+
     // HTTP handlers
     void handle_http_request(boost::beast::http::request<boost::beast::http::string_body>&& req,
                              std::function<void(boost::beast::http::response<boost::beast::http::string_body>)> send);
@@ -60,6 +69,9 @@ private:
     boost::beast::http::response<boost::beast::http::string_body> 
     handle_metrics();
     
+    boost::beast::http::response<boost::beast::http::string_body> 
+    handle_latest_event(const std::string& topic);
+    
     // WebSocket metrics
     void start_metrics_websocket();
     void metrics_broadcast_loop();
@@ -70,6 +82,10 @@ private:
     std::string auth_token_;
     
     std::atomic<bool> running_{false};
+
+    // Minimal HTTP listener (only /metrics)
+    std::unique_ptr<tcp::acceptor> http_acceptor_;
+    std::unique_ptr<std::jthread> http_thread_;
     
     // Component references
     std::shared_ptr<MockFeed> mock_feed_;

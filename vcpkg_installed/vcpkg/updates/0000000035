@@ -1,0 +1,9 @@
+Package: boost-tuple
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-cmake, boost-config, boost-core, boost-headers, boost-static-assert, boost-type-traits
+Architecture: x64-windows
+Multi-Arch: same
+Abi: b090e639ef20a43fe2b9b18a7d6c638826486a4cdf5ba984a5fa31a46fccfa6d
+Description: Boost tuple module
+Status: install ok installed

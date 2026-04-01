@@ -18,9 +18,10 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
 endif()
 
 # Find packages
-find_package(Boost REQUIRED COMPONENTS system filesystem thread)
+find_package(Boost CONFIG REQUIRED COMPONENTS system filesystem thread)
+find_package(boost_asio CONFIG REQUIRED)
+find_package(boost_beast CONFIG REQUIRED)
 find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
 
 # Third-party libraries (simplified for demo - would use vcpkg/conan in production)
 add_library(spdlog INTERFACE)
@@ -53,6 +54,8 @@ target_link_libraries(md_core
         Boost::system 
         Boost::filesystem 
         Boost::thread
+        Boost::asio
+        Boost::beast
         Threads::Threads
         spdlog
         nlohmann_json
@@ -77,11 +80,19 @@ endif()
 
 # Tests
 if(BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+        enable_testing()
+        add_subdirectory(tests)
+    else()
+        message(STATUS "Skipping tests: tests/CMakeLists.txt not found")
+    endif()
 endif()
 
 # Benchmarks
 if(BUILD_BENCHMARKS)
-    add_subdirectory(benchmarks)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/CMakeLists.txt")
+        add_subdirectory(benchmarks)
+    else()
+        message(STATUS "Skipping benchmarks: benchmarks/CMakeLists.txt not found")
+    endif()
 endif()

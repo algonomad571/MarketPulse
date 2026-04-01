@@ -1,0 +1,9 @@
+Package: boost-interval
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-cmake, boost-config, boost-detail, boost-headers, boost-logic
+Architecture: x64-windows
+Multi-Arch: same
+Abi: c76820aff0663d63cdca38b3932012cd94b0377d119c576d34df9b71798fea8e
+Description: Boost interval module
+Status: install ok half-installed

@@ -1,0 +1,11 @@
+{
+  "name": "marketpulse",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "boost-system",
+    "boost-filesystem",
+    "boost-thread",
+    "boost-asio",
+    "boost-beast"
+  ]
+}

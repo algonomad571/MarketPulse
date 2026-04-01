@@ -1,0 +1,9 @@
+Package: boost-optional
+Version: 1.90.0
+Port-Version: 1
+Depends: boost-assert, boost-cmake, boost-config, boost-core, boost-headers, boost-throw-exception, boost-type-traits
+Architecture: x64-windows
+Multi-Arch: same
+Abi: b87e267a98712d461b21bffcea1cd5371e8692234f31a33e2d2ad819d2312c6b
+Description: Boost optional module
+Status: install ok half-installed
