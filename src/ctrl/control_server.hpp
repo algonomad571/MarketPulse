@@ -43,6 +43,7 @@ public:
 
 private:
     using tcp = boost::asio::ip::tcp;
+    struct MetricsWsClient;
 
     // Minimal HTTP server lifecycle
     void http_server_loop(std::stop_token token);
@@ -81,6 +82,8 @@ private:
     
     // WebSocket metrics
     void start_metrics_websocket();
+    void websocket_accept_loop(std::stop_token token);
+    void handle_websocket_session(tcp::socket socket);
     void metrics_broadcast_loop();
     
     boost::asio::io_context& io_context_;
@@ -106,8 +109,10 @@ private:
     std::mutex feed_control_mutex_;
     
     // WebSocket metrics
+    std::unique_ptr<tcp::acceptor> ws_acceptor_;
+    std::unique_ptr<std::jthread> ws_accept_thread_;
     std::unique_ptr<std::jthread> metrics_thread_;
-    std::vector<std::shared_ptr<boost::beast::websocket::stream<boost::beast::tcp_stream>>> ws_connections_;
+    std::vector<std::shared_ptr<MetricsWsClient>> ws_connections_;
     std::mutex ws_connections_mutex_;
 };
 

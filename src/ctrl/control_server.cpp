@@ -10,6 +10,8 @@
 #include <boost/beast/websocket.hpp>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <deque>
 #include <sstream>
 
 namespace beast = boost::beast;
@@ -19,6 +21,108 @@ namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
 namespace md {
+
+struct ControlServer::MetricsWsClient : public std::enable_shared_from_this<ControlServer::MetricsWsClient> {
+    explicit MetricsWsClient(std::shared_ptr<websocket::stream<beast::tcp_stream>> ws_stream)
+        : ws(std::move(ws_stream)) {
+    }
+
+    ~MetricsWsClient() {
+        stop();
+    }
+
+    void start() {
+        writer_thread = std::make_unique<std::jthread>([self = shared_from_this()](std::stop_token token) {
+            self->writer_loop(token);
+        });
+    }
+
+    bool enqueue(std::string message) {
+        std::lock_guard<std::mutex> lock(queue_mutex);
+        if (!running.load()) {
+            return false;
+        }
+
+        if (pending_messages.size() >= max_pending_messages) {
+            pending_messages.pop_front();
+            MetricsCollector::instance().increment_counter("control_ws_metrics_dropped_messages_total");
+        }
+
+        pending_messages.push_back(std::move(message));
+        queue_cv.notify_one();
+        return true;
+    }
+
+    void stop() {
+        const bool was_running = running.exchange(false);
+        if (!was_running) {
+            return;
+        }
+
+        queue_cv.notify_all();
+        if (writer_thread && writer_thread->joinable()) {
+            writer_thread->request_stop();
+            writer_thread->join();
+        }
+
+        if (ws && ws->is_open()) {
+            beast::error_code ec;
+            ws->close(websocket::close_code::normal, ec);
+        }
+    }
+
+    bool is_running() const {
+        return running.load();
+    }
+
+private:
+    void writer_loop(std::stop_token token) {
+        while (running.load() && !token.stop_requested()) {
+            std::string next;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex);
+                queue_cv.wait(lock, [this, &token] {
+                    return !running.load() || token.stop_requested() || !pending_messages.empty();
+                });
+
+                if (!running.load() || token.stop_requested()) {
+                    break;
+                }
+
+                if (pending_messages.empty()) {
+                    continue;
+                }
+
+                next = std::move(pending_messages.front());
+                pending_messages.pop_front();
+            }
+
+            beast::error_code ec;
+            ws->text(true);
+            ws->write(net::buffer(next), ec);
+            if (ec) {
+                MetricsCollector::instance().increment_counter("control_ws_metrics_write_errors_total");
+                running.store(false);
+                break;
+            }
+        }
+
+        if (ws && ws->is_open()) {
+            beast::error_code ec;
+            ws->close(websocket::close_code::normal, ec);
+        }
+        running.store(false);
+    }
+
+    static constexpr size_t max_pending_messages = 64;
+
+    std::shared_ptr<websocket::stream<beast::tcp_stream>> ws;
+    std::atomic<bool> running{true};
+    std::deque<std::string> pending_messages;
+    std::mutex queue_mutex;
+    std::condition_variable queue_cv;
+    std::unique_ptr<std::jthread> writer_thread;
+};
 
 namespace {
 
@@ -36,6 +140,40 @@ http::response<http::string_body> make_json_response(
     res.body() = body.dump();
     res.prepare_payload();
     return res;
+}
+
+nlohmann::json build_ws_metrics_payload() {
+    auto& metrics = MetricsCollector::instance();
+
+    const auto normalizer_latency = metrics.get_latency_percentiles("normalizer_event_latency_ns");
+    const auto publisher_latency = metrics.get_latency_percentiles("publisher_publish_latency_ns");
+    const auto recorder_latency = metrics.get_latency_percentiles("recorder_write_frame_ns");
+
+    nlohmann::json payload;
+    payload["timestamp_ns"] = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    payload["throughput"] = {
+        {"feed_events_ingested_total", metrics.get_counter("feed_events_ingested_total")},
+        {"normalizer_events_total", metrics.get_counter("normalizer_events_total")},
+        {"publisher_frames_published_total", metrics.get_counter("publisher_frames_published_total")},
+        {"recorder_frames_total", metrics.get_counter("recorder_frames_total")},
+        {"frame_distribution_total", metrics.get_counter("frame_distribution_total")}
+    };
+
+    payload["latency"] = {
+        {"normalizer_event_latency_ns", {{"p50", normalizer_latency.p50}, {"p99", normalizer_latency.p99}}},
+        {"publisher_publish_latency_ns", {{"p50", publisher_latency.p50}, {"p99", publisher_latency.p99}}},
+        {"recorder_write_frame_ns", {{"p50", recorder_latency.p50}, {"p99", recorder_latency.p99}}}
+    };
+
+    payload["queue_depths"] = {
+        {"pipeline_feed_queue_approx", metrics.get_gauge("pipeline_feed_queue_approx")},
+        {"pipeline_normalizer_to_publisher_queue_approx", metrics.get_gauge("pipeline_normalizer_to_publisher_queue_approx")},
+        {"pipeline_normalizer_to_recorder_queue_approx", metrics.get_gauge("pipeline_normalizer_to_recorder_queue_approx")}
+    };
+
+    return payload;
 }
 
 } // namespace
@@ -86,9 +224,11 @@ void ControlServer::start() {
             http_server_loop(token);
         });
 
+        start_metrics_websocket();
+
         spdlog::info("ControlServer listening on HTTP port {}", http_port_);
     } catch (...) {
-        running_.store(false);
+        stop();
         throw;
     }
 }
@@ -110,13 +250,30 @@ void ControlServer::stop() {
         http_thread_.reset();
     }
 
+    if (ws_acceptor_) {
+        beast::error_code ec;
+        ws_acceptor_->close(ec);
+        ws_acceptor_.reset();
+    }
+
+    if (ws_accept_thread_ && ws_accept_thread_->joinable()) {
+        ws_accept_thread_->request_stop();
+        ws_accept_thread_->join();
+        ws_accept_thread_.reset();
+    }
+
+    if (metrics_thread_ && metrics_thread_->joinable()) {
+        metrics_thread_->request_stop();
+        metrics_thread_->join();
+        metrics_thread_.reset();
+    }
+
     // Close all WebSocket connections
     {
         std::lock_guard<std::mutex> lock(ws_connections_mutex_);
-        for (auto& ws : ws_connections_) {
-            if (ws) {
-                beast::error_code ec;
-                ws->close(websocket::close_code::going_away, ec);
+        for (auto& client : ws_connections_) {
+            if (client) {
+                client->stop();
             }
         }
         ws_connections_.clear();
@@ -598,52 +755,169 @@ http::response<http::string_body> ControlServer::handle_latest_event(const std::
 }
 
 void ControlServer::start_metrics_websocket() {
-    // TODO: Implement WebSocket metrics server
-    // This would involve setting up a WebSocket acceptor and handling connections
-    spdlog::info("WebSocket metrics server would start on port {}", ws_port_);
+    ws_acceptor_ = std::make_unique<tcp::acceptor>(io_context_);
+
+    beast::error_code ec;
+    const auto endpoint = tcp::endpoint(tcp::v4(), ws_port_);
+
+    ws_acceptor_->open(endpoint.protocol(), ec);
+    if (ec) {
+        throw std::runtime_error("ControlServer WS open failed: " + ec.message());
+    }
+
+    ws_acceptor_->set_option(net::socket_base::reuse_address(true), ec);
+    if (ec) {
+        throw std::runtime_error("ControlServer WS set_option failed: " + ec.message());
+    }
+
+    ws_acceptor_->bind(endpoint, ec);
+    if (ec) {
+        throw std::runtime_error("ControlServer WS bind failed: " + ec.message());
+    }
+
+    ws_acceptor_->listen(net::socket_base::max_listen_connections, ec);
+    if (ec) {
+        throw std::runtime_error("ControlServer WS listen failed: " + ec.message());
+    }
+
+    ws_accept_thread_ = std::make_unique<std::jthread>([this](std::stop_token token) {
+        websocket_accept_loop(token);
+    });
+
+    metrics_thread_ = std::make_unique<std::jthread>([this](std::stop_token token) {
+        while (running_.load() && !token.stop_requested()) {
+            metrics_broadcast_loop();
+        }
+    });
+
+    spdlog::info("ControlServer WebSocket metrics endpoint available at ws://localhost:{}/ws/metrics", ws_port_);
+}
+
+void ControlServer::websocket_accept_loop(std::stop_token token) {
+    while (running_.load() && !token.stop_requested()) {
+        try {
+            tcp::socket socket(io_context_);
+            beast::error_code ec;
+            ws_acceptor_->accept(socket, ec);
+
+            if (ec) {
+                if (!running_.load() || ec == net::error::operation_aborted || ec == beast::errc::bad_file_descriptor) {
+                    break;
+                }
+                spdlog::warn("ControlServer WS accept failed: {}", ec.message());
+                continue;
+            }
+
+            std::thread([this, s = std::move(socket)]() mutable {
+                handle_websocket_session(std::move(s));
+            }).detach();
+        } catch (const std::exception& e) {
+            if (running_.load()) {
+                spdlog::error("ControlServer WS listener error: {}", e.what());
+            }
+        }
+    }
+}
+
+void ControlServer::handle_websocket_session(tcp::socket socket) {
+    beast::error_code ec;
+    beast::flat_buffer buffer;
+    http::request<http::string_body> req;
+
+    http::read(socket, buffer, req, ec);
+    if (ec) {
+        spdlog::debug("ControlServer WS pre-read failed: {}", ec.message());
+        return;
+    }
+
+    if (req.target() != "/ws/metrics") {
+        auto res = make_json_response(
+            http::status::not_found,
+            nlohmann::json{{"error", "WebSocket endpoint not found"}},
+            req.version(),
+            false);
+        http::write(socket, res, ec);
+        socket.shutdown(tcp::socket::shutdown_send, ec);
+        return;
+    }
+
+    if (!websocket::is_upgrade(req)) {
+        auto res = make_json_response(
+            http::status::bad_request,
+            nlohmann::json{{"error", "Expected WebSocket upgrade"}},
+            req.version(),
+            false);
+        http::write(socket, res, ec);
+        socket.shutdown(tcp::socket::shutdown_send, ec);
+        return;
+    }
+
+    auto ws = std::make_shared<websocket::stream<beast::tcp_stream>>(std::move(socket));
+    ws->set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
+    ws->set_option(websocket::stream_base::decorator(
+        [](websocket::response_type& response) {
+            response.set(http::field::server, "MarketPulse-ControlServer");
+        }));
+
+    ws->accept(req, ec);
+    if (ec) {
+        spdlog::warn("ControlServer WS handshake failed: {}", ec.message());
+        return;
+    }
+
+    auto client = std::make_shared<MetricsWsClient>(ws);
+    client->start();
+
+    {
+        std::lock_guard<std::mutex> lock(ws_connections_mutex_);
+        ws_connections_.push_back(client);
+    }
+
+    MetricsCollector::instance().increment_counter("control_ws_metrics_connections_total");
+    spdlog::info("ControlServer WS client connected");
 }
 
 void ControlServer::metrics_broadcast_loop() {
-    while (running_.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
-        
-        if (!running_.load()) break;
-        
-        try {
-            std::string metrics_json = MetricsCollector::instance().get_json_metrics();
-            
-            // Broadcast to all connected WebSocket clients
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    if (!running_.load()) {
+        return;
+    }
+
+    try {
+        const std::string metrics_json = build_ws_metrics_payload().dump();
+
+        std::vector<std::shared_ptr<MetricsWsClient>> clients_snapshot;
+        {
             std::lock_guard<std::mutex> lock(ws_connections_mutex_);
-            
-            auto it = ws_connections_.begin();
-            while (it != ws_connections_.end()) {
-                auto& ws = *it;
-                if (!ws || !ws->is_open()) {
-                    it = ws_connections_.erase(it);
-                    continue;
-                }
-                
-                try {
-                    ws->text(true);
-                    beast::error_code ec;
-                    ws->write(net::buffer(metrics_json), ec);
-                    if (ec) {
-                        spdlog::warn("WebSocket write error: {}", ec.message());
-                        it = ws_connections_.erase(it);
-                        continue;
-                    }
-                } catch (const std::exception& e) {
-                    spdlog::warn("WebSocket broadcast error: {}", e.what());
-                    it = ws_connections_.erase(it);
-                    continue;
-                }
-                
-                ++it;
-            }
-            
-        } catch (const std::exception& e) {
-            spdlog::error("Metrics broadcast error: {}", e.what());
+            ws_connections_.erase(
+                std::remove_if(ws_connections_.begin(), ws_connections_.end(),
+                    [](const auto& client) {
+                        return !client || !client->is_running();
+                    }),
+                ws_connections_.end());
+            clients_snapshot = ws_connections_;
         }
+
+        for (auto& client : clients_snapshot) {
+            if (!client || !client->enqueue(metrics_json)) {
+                if (client) {
+                    client->stop();
+                }
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(ws_connections_mutex_);
+            ws_connections_.erase(
+                std::remove_if(ws_connections_.begin(), ws_connections_.end(),
+                    [](const auto& client) {
+                        return !client || !client->is_running();
+                    }),
+                ws_connections_.end());
+        }
+    } catch (const std::exception& e) {
+        spdlog::error("Metrics broadcast error: {}", e.what());
     }
 }
 
