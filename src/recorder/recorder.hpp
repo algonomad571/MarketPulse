@@ -24,7 +24,6 @@
 #include "../common/frame.hpp"
 #include <memory>
 #include <string>
-#include <fstream>
 #include <vector>
 #include <unordered_set>
 #include <atomic>
@@ -34,6 +33,8 @@
 #include <concurrentqueue.h>
 
 namespace md {
+
+class MappedAppendFile;
 
 class Recorder {
 public:
@@ -90,13 +91,14 @@ private:
     std::atomic<bool> running_{false};
     
     // Current file state
-    std::unique_ptr<std::ofstream> mdf_file_;
-    std::unique_ptr<std::ofstream> idx_file_;
+    std::unique_ptr<MappedAppendFile> mdf_file_;
+    std::unique_ptr<MappedAppendFile> idx_file_;
     std::string current_mdf_path_;
     std::string current_idx_path_;
     
     uint64_t current_file_start_ts_;
     uint64_t current_file_bytes_;
+    uint64_t current_idx_bytes_;
     uint32_t current_frame_count_;
     uint32_t frames_since_last_index_;
     std::unordered_set<uint32_t> unique_symbols_;

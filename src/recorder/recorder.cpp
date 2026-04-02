@@ -7,8 +7,258 @@
 #include <iomanip>
 #include <sstream>
 #include <functional>
+#include <cstring>
+
+#ifdef _WIN32
+#include <Windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace md {
+
+class MappedAppendFile {
+public:
+    MappedAppendFile() = default;
+
+    ~MappedAppendFile() {
+        close_and_truncate(size_);
+    }
+
+    bool open(const std::string& path, uint64_t initial_capacity) {
+        if (is_open()) {
+            return false;
+        }
+
+        path_ = path;
+        if (initial_capacity == 0) {
+            initial_capacity = 4096;
+        }
+
+#ifdef _WIN32
+        file_handle_ = CreateFileA(path.c_str(),
+                                   GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ,
+                                   nullptr,
+                                   CREATE_ALWAYS,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   nullptr);
+        if (file_handle_ == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+#else
+        fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (fd_ < 0) {
+            return false;
+        }
+#endif
+
+        if (!remap(initial_capacity)) {
+            close_and_truncate(0);
+            return false;
+        }
+
+        size_ = 0;
+        return true;
+    }
+
+    bool append(const void* data, size_t len, uint64_t& offset_out) {
+        if (!is_open()) {
+            return false;
+        }
+
+        if (len == 0) {
+            offset_out = size_;
+            return true;
+        }
+
+        const uint64_t required = size_ + static_cast<uint64_t>(len);
+        if (!ensure_capacity(required)) {
+            return false;
+        }
+
+        offset_out = size_;
+        std::memcpy(mapped_ + size_, data, len);
+        size_ = required;
+        return true;
+    }
+
+    bool write_at(uint64_t offset, const void* data, size_t len) {
+        if (!is_open()) {
+            return false;
+        }
+
+        const uint64_t end = offset + static_cast<uint64_t>(len);
+        if (end > size_ || end > capacity_) {
+            return false;
+        }
+
+        std::memcpy(mapped_ + offset, data, len);
+        return true;
+    }
+
+    bool flush() {
+        if (!is_open()) {
+            return false;
+        }
+
+#ifdef _WIN32
+        if (!FlushViewOfFile(mapped_, 0)) {
+            return false;
+        }
+        if (!FlushFileBuffers(file_handle_)) {
+            return false;
+        }
+#else
+        if (::msync(mapped_, static_cast<size_t>(capacity_), MS_SYNC) != 0) {
+            return false;
+        }
+        if (::fsync(fd_) != 0) {
+            return false;
+        }
+#endif
+
+        return true;
+    }
+
+    bool close_and_truncate(uint64_t final_size) {
+        if (!is_open()) {
+            return true;
+        }
+
+        if (final_size > size_) {
+            final_size = size_;
+        }
+
+        flush();
+
+#ifdef _WIN32
+        if (mapped_) {
+            UnmapViewOfFile(mapped_);
+            mapped_ = nullptr;
+        }
+        if (mapping_handle_) {
+            CloseHandle(mapping_handle_);
+            mapping_handle_ = nullptr;
+        }
+        LARGE_INTEGER li;
+        li.QuadPart = static_cast<LONGLONG>(final_size);
+        SetFilePointerEx(file_handle_, li, nullptr, FILE_BEGIN);
+        SetEndOfFile(file_handle_);
+        CloseHandle(file_handle_);
+        file_handle_ = INVALID_HANDLE_VALUE;
+#else
+        if (mapped_) {
+            ::munmap(mapped_, static_cast<size_t>(capacity_));
+            mapped_ = nullptr;
+        }
+        ::ftruncate(fd_, static_cast<off_t>(final_size));
+        ::close(fd_);
+        fd_ = -1;
+#endif
+
+        capacity_ = 0;
+        size_ = 0;
+        return true;
+    }
+
+    bool is_open() const {
+#ifdef _WIN32
+        return file_handle_ != INVALID_HANDLE_VALUE && mapped_ != nullptr;
+#else
+        return fd_ >= 0 && mapped_ != nullptr;
+#endif
+    }
+
+private:
+    bool ensure_capacity(uint64_t required) {
+        if (required <= capacity_) {
+            return true;
+        }
+
+        uint64_t new_capacity = capacity_ == 0 ? 4096 : capacity_;
+        while (new_capacity < required) {
+            new_capacity *= 2;
+        }
+
+        return remap(new_capacity);
+    }
+
+    bool remap(uint64_t new_capacity) {
+#ifdef _WIN32
+        if (mapped_) {
+            UnmapViewOfFile(mapped_);
+            mapped_ = nullptr;
+        }
+        if (mapping_handle_) {
+            CloseHandle(mapping_handle_);
+            mapping_handle_ = nullptr;
+        }
+
+        LARGE_INTEGER li;
+        li.QuadPart = static_cast<LONGLONG>(new_capacity);
+        if (!SetFilePointerEx(file_handle_, li, nullptr, FILE_BEGIN)) {
+            return false;
+        }
+        if (!SetEndOfFile(file_handle_)) {
+            return false;
+        }
+
+        const DWORD high = static_cast<DWORD>(new_capacity >> 32);
+        const DWORD low = static_cast<DWORD>(new_capacity & 0xFFFFFFFFULL);
+        mapping_handle_ = CreateFileMappingA(file_handle_, nullptr, PAGE_READWRITE, high, low, nullptr);
+        if (!mapping_handle_) {
+            return false;
+        }
+
+        mapped_ = static_cast<std::byte*>(MapViewOfFile(mapping_handle_, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, 0));
+        if (!mapped_) {
+            CloseHandle(mapping_handle_);
+            mapping_handle_ = nullptr;
+            return false;
+        }
+#else
+        if (mapped_) {
+            ::munmap(mapped_, static_cast<size_t>(capacity_));
+            mapped_ = nullptr;
+        }
+
+        if (::ftruncate(fd_, static_cast<off_t>(new_capacity)) != 0) {
+            return false;
+        }
+
+        void* view = ::mmap(nullptr,
+                            static_cast<size_t>(new_capacity),
+                            PROT_READ | PROT_WRITE,
+                            MAP_SHARED,
+                            fd_,
+                            0);
+        if (view == MAP_FAILED) {
+            mapped_ = nullptr;
+            return false;
+        }
+        mapped_ = static_cast<std::byte*>(view);
+#endif
+
+        capacity_ = new_capacity;
+        return true;
+    }
+
+    std::string path_;
+    std::byte* mapped_ = nullptr;
+    uint64_t capacity_ = 0;
+    uint64_t size_ = 0;
+
+#ifdef _WIN32
+    HANDLE file_handle_ = INVALID_HANDLE_VALUE;
+    HANDLE mapping_handle_ = nullptr;
+#else
+    int fd_ = -1;
+#endif
+};
 
 Recorder::Recorder(const std::string& data_dir,
                    std::shared_ptr<moodycamel::ConcurrentQueue<Frame>> input_queue,
@@ -26,6 +276,7 @@ Recorder::Recorder(const std::string& data_dir,
     
     current_file_start_ts_ = 0;
     current_file_bytes_ = 0;
+    current_idx_bytes_ = 0;
     current_frame_count_ = 0;
     frames_since_last_index_ = 0;
     needs_fsync_ = false;
@@ -217,8 +468,8 @@ void Recorder::write_frame(const Frame& frame) {
     auto encoded = encode_frame(frame, write_buffer_);
     
     // Write to MDF file
-    mdf_file_->write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
-    if (mdf_file_->fail()) {
+    uint64_t file_offset = 0;
+    if (!mdf_file_->append(encoded.data(), encoded.size(), file_offset)) {
         spdlog::error("Failed to write frame to MDF file: {} bytes to {}", encoded.size(), current_mdf_path_);
         stats_.write_errors.fetch_add(1);
         consecutive_failures_.fetch_add(1);
@@ -236,7 +487,7 @@ void Recorder::write_frame(const Frame& frame) {
     // SUCCESS: Reset failure counter
     consecutive_failures_.store(0);
     
-    current_file_bytes_ += encoded.size();
+    current_file_bytes_ = file_offset + encoded.size();
     current_frame_count_++;
     frames_since_last_index_++;
     needs_fsync_ = true;
@@ -261,7 +512,6 @@ void Recorder::write_frame(const Frame& frame) {
             }
         }, frame.body);
         
-        uint64_t file_offset = current_file_bytes_ - encoded.size(); // offset before this frame
         write_index_entry(timestamp_ns, file_offset);
         frames_since_last_index_ = 0;
     }
@@ -282,13 +532,16 @@ void Recorder::write_index_entry(uint64_t timestamp_ns, uint64_t file_offset) {
     entry.ts_ns_first = timestamp_ns;
     entry.file_offset = file_offset;
     
-    idx_file_->write(reinterpret_cast<const char*>(&entry), sizeof(IndexEntry));
-    if (idx_file_->fail()) {
+    uint64_t idx_offset = 0;
+    if (!idx_file_->append(&entry, sizeof(IndexEntry), idx_offset)) {
         // HARDENING: Log index write failures but don't fail the entire write
         // Index is for optimization only, MDF file is the source of truth
         spdlog::error("Failed to write index entry at offset {}", file_offset);
         MetricsCollector::instance().increment_counter("recorder_index_write_errors_total");
+        return;
     }
+
+    current_idx_bytes_ = idx_offset + sizeof(IndexEntry);
 }
 
 void Recorder::update_mdf_header() {
@@ -296,30 +549,22 @@ void Recorder::update_mdf_header() {
         return;
     }
     
-    // Save current position
-    auto current_pos = mdf_file_->tellp();
-    
-    // Seek to header and update
-    mdf_file_->seekp(0);
-    
     MdfHeader header;
     header.start_ts_ns = current_file_start_ts_;
     header.end_ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     header.symbol_count = static_cast<uint32_t>(unique_symbols_.size());
     header.frame_count = current_frame_count_;
-    
-    mdf_file_->write(reinterpret_cast<const char*>(&header), sizeof(MdfHeader));
-    
-    // Restore position
-    mdf_file_->seekp(current_pos);
+
+    if (!mdf_file_->write_at(0, &header, sizeof(MdfHeader))) {
+        spdlog::warn("Failed to update MDF header for {}", current_mdf_path_);
+    }
 }
 
 void Recorder::fsync_files() {
     if (mdf_file_) {
+        update_mdf_header();
         mdf_file_->flush();
-        // In a real implementation, we'd call fsync() on the file descriptor
-        // For now, just flush the stream
     }
     
     if (idx_file_) {
@@ -359,8 +604,9 @@ bool Recorder::open_new_files(uint64_t timestamp_ns) {
     
     // HARDENING: Retry file open with exponential backoff
     auto open_mdf = [&]() -> bool {
-        auto mdf_file = std::make_unique<std::ofstream>(new_mdf_path, std::ios::binary);
-        if (!mdf_file->is_open()) {
+        constexpr uint64_t kInitialMdfMapBytes = 64ULL * 1024ULL * 1024ULL;
+        auto mdf_file = std::make_unique<MappedAppendFile>();
+        if (!mdf_file->open(new_mdf_path, kInitialMdfMapBytes)) {
             spdlog::warn("Failed to open MDF file: {}", new_mdf_path);
             return false;
         }
@@ -372,10 +618,9 @@ bool Recorder::open_new_files(uint64_t timestamp_ns) {
         header.symbol_count = 0;
         header.frame_count = 0;
         
-        mdf_file->write(reinterpret_cast<const char*>(&header), sizeof(MdfHeader));
-        if (mdf_file->fail()) {
+        uint64_t offset = 0;
+        if (!mdf_file->append(&header, sizeof(MdfHeader), offset)) {
             spdlog::warn("Failed to write MDF header to {}", new_mdf_path);
-            mdf_file->close();
             return false;
         }
         
@@ -385,8 +630,9 @@ bool Recorder::open_new_files(uint64_t timestamp_ns) {
     };
     
     auto open_idx = [&]() -> bool {
-        auto idx_file = std::make_unique<std::ofstream>(new_idx_path, std::ios::binary);
-        if (!idx_file->is_open()) {
+        constexpr uint64_t kInitialIdxMapBytes = 4ULL * 1024ULL * 1024ULL;
+        auto idx_file = std::make_unique<MappedAppendFile>();
+        if (!idx_file->open(new_idx_path, kInitialIdxMapBytes)) {
             spdlog::warn("Failed to open IDX file: {}", new_idx_path);
             return false;
         }
@@ -411,7 +657,7 @@ bool Recorder::open_new_files(uint64_t timestamp_ns) {
         
         // Clean up MDF file if IDX failed
         if (mdf_file_) {
-            mdf_file_->close();
+            mdf_file_->close_and_truncate(sizeof(MdfHeader));
             mdf_file_.reset();
             current_mdf_path_.clear();
         }
@@ -421,6 +667,7 @@ bool Recorder::open_new_files(uint64_t timestamp_ns) {
     // Reset counters
     current_file_start_ts_ = timestamp_ns;
     current_file_bytes_ = sizeof(MdfHeader);
+    current_idx_bytes_ = 0;
     current_frame_count_ = 0;
     frames_since_last_index_ = 0;
     unique_symbols_.clear();
@@ -432,12 +679,12 @@ bool Recorder::open_new_files(uint64_t timestamp_ns) {
 void Recorder::close_current_files() {
     if (mdf_file_) {
         update_mdf_header(); // Final header update
-        mdf_file_->close();
+        mdf_file_->close_and_truncate(current_file_bytes_);
         mdf_file_.reset();
     }
     
     if (idx_file_) {
-        idx_file_->close();
+        idx_file_->close_and_truncate(current_idx_bytes_);
         idx_file_.reset();
     }
     
