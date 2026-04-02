@@ -1,5 +1,5 @@
 global:
-  scrape_interval: 15s
+  scrape_interval: 5s
   evaluation_interval: 15s
 
 rule_files:
@@ -11,14 +11,8 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  - job_name: 'market-data-core'
+  - job_name: 'marketpulse-core'
     static_configs:
-      - targets: ['md-core:8080']
+      - targets: ['core:8080']
     metrics_path: '/metrics'
     scrape_interval: 5s
-    
-  - job_name: 'market-data-ui'
-    static_configs:
-      - targets: ['ui:3000']
-    metrics_path: '/api/metrics'
-    scrape_interval: 30s

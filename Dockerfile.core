@@ -36,7 +36,9 @@ RUN ./vcpkg install \
 # Copy source code
 WORKDIR /app
 COPY src/ src/
+COPY external/ external/
 COPY CMakeLists.txt .
+COPY vcpkg.json .
 COPY config.json .
 
 # Build the application
