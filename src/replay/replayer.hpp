@@ -32,13 +32,12 @@ struct ReplaySession {
     std::unique_ptr<std::ifstream> idx_file;
     std::string mdf_path;
     std::string idx_path;
+    std::vector<std::string> mdf_paths;
+    std::vector<std::string> idx_paths;
+    size_t current_file_index{0};
     
     // Playback thread
     std::unique_ptr<std::jthread> playback_thread;
-    
-    // Token bucket for rate limiting
-    double tokens{0.0};
-    std::chrono::steady_clock::time_point last_token_time;
 };
 
 class Replayer {
@@ -87,13 +86,12 @@ private:
     void playback_thread(const std::string& session_id);
     
     // File operations
-    bool find_files_for_timestamp(uint64_t timestamp_ns, std::string& mdf_path, std::string& idx_path) const;
+    bool find_files_for_range(uint64_t from_ts_ns,
+                              uint64_t to_ts_ns,
+                              std::vector<std::string>& mdf_paths,
+                              std::vector<std::string>& idx_paths) const;
     bool seek_to_timestamp(ReplaySession& session, uint64_t target_ts_ns);
     std::optional<Frame> read_next_frame(ReplaySession& session);
-    
-    // Rate limiting
-    bool consume_tokens(ReplaySession& session, double tokens_needed);
-    void add_tokens(ReplaySession& session, double elapsed_seconds);
     
     std::string generate_session_id() const;
     std::string get_virtual_topic(const std::string& session_id, const std::string& base_topic) const;

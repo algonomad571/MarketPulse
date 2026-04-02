@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 
 namespace md {
 
@@ -41,8 +42,11 @@ std::string Replayer::start_session(uint64_t from_ts_ns, uint64_t to_ts_ns,
         throw std::invalid_argument("Invalid timestamp range");
     }
     
-    if (rate_multiplier <= 0 || rate_multiplier > MAX_RATE_MULTIPLIER) {
-        throw std::invalid_argument("Invalid rate multiplier");
+    const bool valid_rate = std::fabs(rate_multiplier - 1.0) < 1e-9 ||
+                            std::fabs(rate_multiplier - 10.0) < 1e-9 ||
+                            std::fabs(rate_multiplier - 100.0) < 1e-9;
+    if (!valid_rate) {
+        throw std::invalid_argument("Invalid rate multiplier (supported: 1, 10, 100)");
     }
     
     if (topics.empty()) {
@@ -57,9 +61,10 @@ std::string Replayer::start_session(uint64_t from_ts_ns, uint64_t to_ts_ns,
         }
     }
     
-    // Find appropriate data files
-    std::string mdf_path, idx_path;
-    if (!find_files_for_timestamp(from_ts_ns, mdf_path, idx_path)) {
+    // Find matching data files
+    std::vector<std::string> mdf_paths;
+    std::vector<std::string> idx_paths;
+    if (!find_files_for_range(from_ts_ns, to_ts_ns, mdf_paths, idx_paths)) {
         throw std::runtime_error("No data files found for timestamp range");
     }
     
@@ -71,12 +76,15 @@ std::string Replayer::start_session(uint64_t from_ts_ns, uint64_t to_ts_ns,
     session->rate_multiplier = rate_multiplier;
     session->topics = topics;
     session->current_ts_ns.store(from_ts_ns);
-    session->mdf_path = mdf_path;
-    session->idx_path = idx_path;
+    session->mdf_paths = mdf_paths;
+    session->idx_paths = idx_paths;
+    session->current_file_index = 0;
+    session->mdf_path = session->mdf_paths.front();
+    session->idx_path = session->idx_paths.front();
     
     // Open files
-    session->mdf_file = std::make_unique<std::ifstream>(mdf_path, std::ios::binary);
-    session->idx_file = std::make_unique<std::ifstream>(idx_path, std::ios::binary);
+    session->mdf_file = std::make_unique<std::ifstream>(session->mdf_path, std::ios::binary);
+    session->idx_file = std::make_unique<std::ifstream>(session->idx_path, std::ios::binary);
     
     if (!session->mdf_file->is_open() || !session->idx_file->is_open()) {
         throw std::runtime_error("Failed to open data files");
@@ -86,10 +94,6 @@ std::string Replayer::start_session(uint64_t from_ts_ns, uint64_t to_ts_ns,
     if (!seek_to_timestamp(*session, from_ts_ns)) {
         throw std::runtime_error("Failed to seek to start timestamp");
     }
-    
-    // Initialize token bucket
-    session->tokens = 1000.0; // Start with some tokens
-    session->last_token_time = std::chrono::steady_clock::now();
     
     // Register virtual topics with publisher
     std::string virtual_prefix = "replay." + session->session_id;
@@ -110,8 +114,8 @@ std::string Replayer::start_session(uint64_t from_ts_ns, uint64_t to_ts_ns,
     stats_.total_sessions.fetch_add(1);
     stats_.active_sessions.store(sessions_.size());
     
-    spdlog::info("Started replay session {} for timestamp range {}-{} at {}x rate",
-                 session->session_id, from_ts_ns, to_ts_ns, rate_multiplier);
+    spdlog::info("Started replay session {} for timestamp range {}-{} at {}x rate ({} file(s))",
+                 session->session_id, from_ts_ns, to_ts_ns, rate_multiplier, session->mdf_paths.size());
     
     return session->session_id;
 }
@@ -130,8 +134,6 @@ void Replayer::resume_session(const std::string& session_id) {
     auto it = sessions_.find(session_id);
     if (it != sessions_.end()) {
         it->second->paused.store(false);
-        // Reset token timing
-        it->second->last_token_time = std::chrono::steady_clock::now();
         spdlog::info("Resumed replay session {}", session_id);
     }
 }
@@ -224,9 +226,10 @@ void Replayer::playback_thread(const std::string& session_id) {
     }
     
     spdlog::info("Playback thread started for session {}", session_id);
-    
-    auto last_frame_time = std::chrono::steady_clock::now();
-    std::optional<uint64_t> prev_timestamp_ns;
+
+    std::optional<uint64_t> first_timestamp_ns;
+    std::chrono::steady_clock::time_point wall_start;
+    auto last_progress_log = std::chrono::steady_clock::now();
     
     while (session->running.load()) {
         if (session->paused.load()) {
@@ -261,24 +264,18 @@ void Replayer::playback_thread(const std::string& session_id) {
         }
         
         session->current_ts_ns.store(frame_timestamp_ns);
-        
-        // Rate limiting using original inter-arrival times
-        if (prev_timestamp_ns.has_value()) {
-            uint64_t original_delay_ns = frame_timestamp_ns - *prev_timestamp_ns;
-            double scaled_delay_s = static_cast<double>(original_delay_ns) / 1e9 / session->rate_multiplier;
-            
-            if (scaled_delay_s > 0.001) { // Only delay if > 1ms
-                double tokens_needed = scaled_delay_s * 1000.0; // 1000 tokens per second rate
-                
-                if (!consume_tokens(*session, tokens_needed)) {
-                    // Rate limit - wait a bit
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
-                    continue; // Try again
-                }
-            }
+
+        // Deterministic timestamp pacing: preserve event-time deltas scaled by replay rate.
+        if (!first_timestamp_ns.has_value()) {
+            first_timestamp_ns = frame_timestamp_ns;
+            wall_start = std::chrono::steady_clock::now();
+        } else if (frame_timestamp_ns > *first_timestamp_ns) {
+            const uint64_t elapsed_data_ns = frame_timestamp_ns - *first_timestamp_ns;
+            const uint64_t target_wall_ns = static_cast<uint64_t>(
+                static_cast<double>(elapsed_data_ns) / session->rate_multiplier);
+            const auto target_time = wall_start + std::chrono::nanoseconds(target_wall_ns);
+            std::this_thread::sleep_until(target_time);
         }
-        
-        prev_timestamp_ns = frame_timestamp_ns;
         
         // Determine topic and publish
         std::string base_topic;
@@ -325,45 +322,74 @@ void Replayer::playback_thread(const std::string& session_id) {
         }
         
         MetricsCollector::instance().increment_counter("replayer_frames_sent_total");
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_progress_log >= std::chrono::seconds(5)) {
+            spdlog::info(
+                "Replay progress session={} sent={} current_ts={} rate={}x",
+                session_id,
+                session->frames_sent.load(),
+                session->current_ts_ns.load(),
+                session->rate_multiplier);
+            last_progress_log = now;
+        }
     }
     
     spdlog::info("Playback thread finished for session {}", session_id);
 }
 
-bool Replayer::find_files_for_timestamp(uint64_t timestamp_ns, std::string& mdf_path, std::string& idx_path) const {
-    // Convert timestamp to date for file search
-    auto timestamp_s = timestamp_ns / 1000000000ULL;
-    auto time = std::time_t(timestamp_s);
-    
-    // Look for files in data directory
+bool Replayer::find_files_for_range(uint64_t from_ts_ns,
+                                    uint64_t to_ts_ns,
+                                    std::vector<std::string>& mdf_paths,
+                                    std::vector<std::string>& idx_paths) const {
+    std::vector<std::pair<std::string, std::string>> candidates;
+
     try {
         for (const auto& entry : std::filesystem::directory_iterator(data_dir_)) {
             if (entry.is_regular_file() && entry.path().extension() == ".mdf") {
-                std::string filename = entry.path().filename().string();
-                
-                // Parse timestamp from filename (format: md_YYYYMMDD_HHMMSS.mdf)
-                if (filename.length() >= 18 && filename.substr(0, 3) == "md_") {
-                    std::string date_part = filename.substr(3, 8);  // YYYYMMDD
-                    std::string time_part = filename.substr(12, 6); // HHMMSS
-                    
-                    // Simple check - more sophisticated parsing would be better
-                    // For now, just use the first file found
-                    mdf_path = entry.path().string();
-                    idx_path = entry.path().string();
-                    idx_path.replace(idx_path.length() - 4, 4, ".idx");
-                    
-                    // Check if idx file exists
-                    if (std::filesystem::exists(idx_path)) {
-                        return true;
-                    }
+                std::string mdf_path = entry.path().string();
+                std::string idx_path = mdf_path;
+                idx_path.replace(idx_path.length() - 4, 4, ".idx");
+                if (!std::filesystem::exists(idx_path)) {
+                    continue;
+                }
+
+                std::ifstream mdf_file(mdf_path, std::ios::binary);
+                if (!mdf_file.is_open()) {
+                    continue;
+                }
+
+                MdfHeader header;
+                mdf_file.read(reinterpret_cast<char*>(&header), sizeof(MdfHeader));
+                if (mdf_file.gcount() != sizeof(MdfHeader)) {
+                    continue;
+                }
+
+                if (header.magic != 0x4D444649 || header.version != 1) {
+                    continue;
+                }
+
+                const bool intersects_range = !(header.end_ts_ns < from_ts_ns || header.start_ts_ns > to_ts_ns);
+                if (intersects_range) {
+                    candidates.emplace_back(mdf_path, idx_path);
                 }
             }
+        }
+
+        std::sort(candidates.begin(), candidates.end(),
+            [](const auto& lhs, const auto& rhs) {
+                return lhs.first < rhs.first;
+            });
+
+        for (const auto& [mdf, idx] : candidates) {
+            mdf_paths.push_back(mdf);
+            idx_paths.push_back(idx);
         }
     } catch (const std::exception& e) {
         spdlog::error("Error searching for data files: {}", e.what());
     }
-    
-    return false;
+
+    return !mdf_paths.empty();
 }
 
 bool Replayer::seek_to_timestamp(ReplaySession& session, uint64_t target_ts_ns) {
@@ -414,7 +440,28 @@ std::optional<Frame> Replayer::read_next_frame(ReplaySession& session) {
     session.mdf_file->read(reinterpret_cast<char*>(&header), sizeof(FrameHeader));
     
     if (session.mdf_file->gcount() != sizeof(FrameHeader)) {
-        return std::nullopt; // EOF or error
+        // EOF for this file: advance to next file in the replay range.
+        if (session.current_file_index + 1 >= session.mdf_paths.size()) {
+            return std::nullopt;
+        }
+
+        session.current_file_index++;
+        session.mdf_path = session.mdf_paths[session.current_file_index];
+        session.idx_path = session.idx_paths[session.current_file_index];
+        session.mdf_file = std::make_unique<std::ifstream>(session.mdf_path, std::ios::binary);
+        session.idx_file = std::make_unique<std::ifstream>(session.idx_path, std::ios::binary);
+
+        if (!session.mdf_file->is_open()) {
+            return std::nullopt;
+        }
+
+        // Start at first frame after MDF header.
+        session.mdf_file->seekg(sizeof(MdfHeader));
+        if (!session.mdf_file->good()) {
+            return std::nullopt;
+        }
+
+        return read_next_frame(session);
     }
     
     // Validate header
@@ -437,27 +484,6 @@ std::optional<Frame> Replayer::read_next_frame(ReplaySession& session) {
     std::memcpy(frame_data.data() + sizeof(FrameHeader), body_data.data(), header.body_len);
     
     return decode_frame(std::span<const std::byte>(frame_data.data(), frame_data.size()));
-}
-
-bool Replayer::consume_tokens(ReplaySession& session, double tokens_needed) {
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration<double>(now - session.last_token_time).count();
-    
-    add_tokens(session, elapsed);
-    session.last_token_time = now;
-    
-    if (session.tokens >= tokens_needed) {
-        session.tokens -= tokens_needed;
-        return true;
-    }
-    
-    return false;
-}
-
-void Replayer::add_tokens(ReplaySession& session, double elapsed_seconds) {
-    // Add tokens at base rate (1000 tokens per second)
-    double tokens_to_add = elapsed_seconds * 1000.0 * session.rate_multiplier;
-    session.tokens = std::min(session.tokens + tokens_to_add, 10000.0); // Cap at 10k tokens
 }
 
 std::string Replayer::generate_session_id() const {

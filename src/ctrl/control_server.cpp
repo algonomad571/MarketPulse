@@ -335,6 +335,42 @@ void ControlServer::handle_http_request(
             }
         } else if (target == "/feeds/stop" && method == http::verb::post) {
             res = handle_feeds_stop();
+        } else if (target == "/replay/start" && method == http::verb::post) {
+            try {
+                auto body = nlohmann::json::parse(req.body());
+                body["action"] = "start";
+                res = handle_replay_post(body.dump());
+            } catch (const nlohmann::json::parse_error& e) {
+                spdlog::warn("ControlServer invalid JSON on /replay/start: {}", e.what());
+                res = make_json_response(
+                    http::status::bad_request,
+                    nlohmann::json{{"error", "Invalid JSON"}},
+                    req.version(),
+                    req.keep_alive());
+            }
+        } else if (target == "/replay/stop" && method == http::verb::post) {
+            nlohmann::json body = nlohmann::json::object();
+            if (!req.body().empty()) {
+                try {
+                    body = nlohmann::json::parse(req.body());
+                } catch (const nlohmann::json::parse_error& e) {
+                    spdlog::warn("ControlServer invalid JSON on /replay/stop: {}", e.what());
+                    res = make_json_response(
+                        http::status::bad_request,
+                        nlohmann::json{{"error", "Invalid JSON"}},
+                        req.version(),
+                        req.keep_alive());
+                    res.version(req.version());
+                    res.keep_alive(req.keep_alive());
+                    res.set(http::field::access_control_allow_origin, "*");
+                    res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+                    res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
+                    res.prepare_payload();
+                    return send(std::move(res));
+                }
+            }
+            body["action"] = "stop";
+            res = handle_replay_post(body.dump());
         } else {
             res = make_json_response(
                 http::status::not_found,
@@ -605,21 +641,48 @@ http::response<http::string_body> ControlServer::handle_replay_post(const std::s
         }
         
         if (action == "start") {
-            uint64_t from_ts_ns = json.value("from_ts_ns", 0ULL);
-            uint64_t to_ts_ns = json.value("to_ts_ns", 0ULL);
-            double rate = json.value("rate", 1.0);
+            if (!json.contains("from_ts_ns") || !json["from_ts_ns"].is_number_unsigned() ||
+                !json.contains("to_ts_ns") || !json["to_ts_ns"].is_number_unsigned() ||
+                !json.contains("rate") || !json["rate"].is_number()) {
+                res.result(http::status::bad_request);
+                res.set(http::field::content_type, "application/json");
+                res.body() = R"({"error":"Expected from_ts_ns, to_ts_ns, and rate"})";
+                return res;
+            }
+
+            uint64_t from_ts_ns = json["from_ts_ns"].get<uint64_t>();
+            uint64_t to_ts_ns = json["to_ts_ns"].get<uint64_t>();
+            double rate = json["rate"].get<double>();
+            if (!(rate == 1.0 || rate == 10.0 || rate == 100.0)) {
+                res.result(http::status::bad_request);
+                res.set(http::field::content_type, "application/json");
+                res.body() = R"({"error":"rate must be one of [1, 10, 100]"})";
+                return res;
+            }
+
             auto topics = json.value("topics", std::vector<std::string>{"*"});
-            
+
             std::string session_id = replayer_->start_session(from_ts_ns, to_ts_ns, topics, rate);
-            
+            spdlog::info("Control action: replay start requested session_id={} range={}..{} rate={}x",
+                         session_id, from_ts_ns, to_ts_ns, rate);
+
             res.result(http::status::ok);
             res.set(http::field::content_type, "application/json");
-            res.body() = nlohmann::json{{"session_id", session_id}}.dump();
-            
+            res.body() = nlohmann::json{{"status", "started"}, {"session_id", session_id}}.dump();
+
         } else if (action == "stop") {
             std::string session_id = json.value("session_id", "");
-            replayer_->stop_session(session_id);
-            
+            if (!session_id.empty()) {
+                replayer_->stop_session(session_id);
+                spdlog::info("Control action: replay stop requested session_id={}", session_id);
+            } else {
+                auto sessions = replayer_->get_active_sessions();
+                for (const auto& active_id : sessions) {
+                    replayer_->stop_session(active_id);
+                }
+                spdlog::info("Control action: replay stop requested for all sessions count={}", sessions.size());
+            }
+
             res.result(http::status::ok);
             res.set(http::field::content_type, "application/json");
             res.body() = R"({"status":"stopped"})";
