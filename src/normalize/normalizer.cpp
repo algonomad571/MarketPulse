@@ -3,6 +3,9 @@
 #include <concurrentqueue.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <functional>
+
 // Normalizer: Event processing component
 // 
 // ASSUMPTIONS:
@@ -18,7 +21,8 @@
 // LIMITATIONS:
 // - No timeout on enqueue operations
 // - Failed events are dropped (not retried)
-// - Multiple threads share queues (lock-free, no ordering guarantee)
+// - Deterministic symbol partitioning improves ordering but reduces load-balancing flexibility
+// - Work is still partitioned by worker count, so skewed symbols can concentrate load on one worker
 // 
 // RECOVERY:
 // - Monitor normalizer_failures_total
@@ -40,7 +44,16 @@ Normalizer::Normalizer(std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>> in
                                              uint32_t queue_low_watermark)
         : input_queue_(input_queue), output_queue_(output_queue),
             symbol_registry_(symbol_registry), num_threads_(num_threads),
-            queue_backpressure_("normalizer_to_distributor", queue_high_watermark, queue_low_watermark) {
+            worker_count_(std::max<uint32_t>(1, num_threads)),
+            queue_backpressure_("normalizer_to_distributor", queue_high_watermark, queue_low_watermark),
+            partition_backpressure_("ordering_partitions", queue_high_watermark, queue_low_watermark) {
+    partition_queues_.reserve(worker_count_);
+    for (uint32_t i = 0; i < worker_count_; ++i) {
+        partition_queues_.push_back(std::make_shared<moodycamel::ConcurrentQueue<RawEvent>>(100000));
+    }
+
+    MetricsCollector::instance().set_gauge("ordering_partitions", static_cast<double>(worker_count_));
+    MetricsCollector::instance().set_gauge("partition_queue_depth", 0);
 }
 
 Normalizer::~Normalizer() {
@@ -53,22 +66,31 @@ void Normalizer::start() {
     }
     
     worker_threads_.clear();
-    worker_threads_.reserve(num_threads_);
-    
-    for (uint32_t i = 0; i < num_threads_; ++i) {
+    worker_threads_.reserve(worker_count_);
+
+    for (uint32_t i = 0; i < worker_count_; ++i) {
         worker_threads_.emplace_back(
-            std::make_unique<std::jthread>([this](std::stop_token token) {
-                worker_thread();
+            std::make_unique<std::jthread>([this, i](std::stop_token token) {
+                worker_thread(i, token);
             })
         );
     }
-    
-    spdlog::info("Normalizer started with {} threads", num_threads_);
+
+    routing_thread_ = std::make_unique<std::jthread>([this](std::stop_token token) {
+        routing_thread(token);
+    });
+
+    spdlog::info("Normalizer started with {} ordering partitions", worker_count_);
 }
 
 void Normalizer::stop() {
     if (!running_.exchange(false)) {
         return; // not running
+    }
+
+    if (routing_thread_ && routing_thread_->joinable()) {
+        routing_thread_->request_stop();
+        routing_thread_->join();
     }
     
     for (auto& thread : worker_threads_) {
@@ -78,21 +100,78 @@ void Normalizer::stop() {
         }
     }
     worker_threads_.clear();
+    routing_thread_.reset();
     
     spdlog::info("Normalizer stopped");
 }
 
-void Normalizer::worker_thread() {
+uint32_t Normalizer::worker_for_symbol(std::string_view symbol) const {
+    return static_cast<uint32_t>(std::hash<std::string_view>{}(symbol) % worker_count_);
+}
+
+void Normalizer::update_partition_metrics() const {
+    size_t max_depth = 0;
+    for (const auto& queue : partition_queues_) {
+        if (queue) {
+            max_depth = std::max(max_depth, queue->size_approx());
+        }
+    }
+    MetricsCollector::instance().set_gauge("partition_queue_depth", static_cast<double>(max_depth));
+}
+
+void Normalizer::routing_thread(std::stop_token token) {
+    const size_t batch_size = 100;
+    std::vector<RawEvent> events_batch;
+    events_batch.reserve(batch_size);
+
+    while (running_.load() || input_queue_->size_approx() > 0) {
+        if (token.stop_requested() && input_queue_->size_approx() == 0) {
+            break;
+        }
+
+        events_batch.clear();
+        RawEvent event;
+        while (events_batch.size() < batch_size && input_queue_->try_dequeue(event)) {
+            events_batch.push_back(std::move(event));
+        }
+
+        if (events_batch.empty()) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            continue;
+        }
+
+        for (auto& queued_event : events_batch) {
+            const uint32_t worker_index = worker_for_symbol(queued_event.symbol);
+            spdlog::info("[Ordering] Symbol={} Worker={}", queued_event.symbol, worker_index);
+
+            partition_backpressure_.wait_for_capacity([this, worker_index]() {
+                return partition_queues_[worker_index]->size_approx();
+            }, &running_);
+
+            partition_queues_[worker_index]->enqueue(std::move(queued_event));
+            update_partition_metrics();
+        }
+
+        MetricsCollector::instance().increment_counter("normalizer_events_total", events_batch.size());
+    }
+}
+
+void Normalizer::worker_thread(uint32_t worker_index, std::stop_token token) {
     const size_t batch_size = 100;
     std::vector<RawEvent> events_batch;
     events_batch.reserve(batch_size);
     auto last_log_time = std::chrono::steady_clock::now();
     uint64_t processed_since_log = 0;
+    auto& partition_queue = partition_queues_[worker_index];
     
-    while (running_.load()) {
+    while (running_.load() || partition_queue->size_approx() > 0) {
+        if (token.stop_requested() && partition_queue->size_approx() == 0) {
+            break;
+        }
+
         events_batch.clear();
         RawEvent event;
-        while (events_batch.size() < batch_size && input_queue_->try_dequeue(event)) {
+        while (events_batch.size() < batch_size && partition_queue->try_dequeue(event)) {
             events_batch.push_back(std::move(event));
         }
 
@@ -131,16 +210,16 @@ void Normalizer::worker_thread() {
             
             stats_.events_processed.fetch_add(1);
         }
-        
-        MetricsCollector::instance().increment_counter("normalizer_events_total", dequeued);
 
         processed_since_log += dequeued;
+        update_partition_metrics();
         const auto now = std::chrono::steady_clock::now();
         if (now - last_log_time >= std::chrono::seconds(5)) {
             spdlog::info(
-                "Flow[Normalizer] processed={} in_approx={} out_approx={} total_processed={} total_output={} errors={}",
+                "Flow[Normalizer] worker={} processed={} in_approx={} out_approx={} total_processed={} total_output={} errors={}",
+                worker_index,
                 processed_since_log,
-                input_queue_->size_approx(),
+                partition_queue->size_approx(),
                 output_queue_->size_approx(),
                 stats_.events_processed.load(),
                 stats_.frames_output.load(),

@@ -8,6 +8,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <string_view>
 #include <concurrentqueue.h>
 
 namespace md {
@@ -35,17 +36,24 @@ public:
     const Stats& get_stats() const { return stats_; }
 
 private:
-    void worker_thread();
+    void routing_thread(std::stop_token token);
+    void worker_thread(uint32_t worker_index, std::stop_token token);
     Frame normalize_event(const RawEvent& event);
+    uint32_t worker_for_symbol(std::string_view symbol) const;
+    void update_partition_metrics() const;
     
     std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>> input_queue_;
     std::shared_ptr<moodycamel::ConcurrentQueue<Frame>> output_queue_;
     std::shared_ptr<SymbolRegistry> symbol_registry_;
     
     uint32_t num_threads_;
+    uint32_t worker_count_;
+    std::unique_ptr<std::jthread> routing_thread_;
     std::vector<std::unique_ptr<std::jthread>> worker_threads_;
+    std::vector<std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>>> partition_queues_;
     std::atomic<bool> running_{false};
     QueueBackpressureController queue_backpressure_;
+    QueueBackpressureController partition_backpressure_;
     
     Stats stats_;
 };
