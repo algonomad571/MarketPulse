@@ -335,6 +335,8 @@ void PubServer::publish(const std::string& topic, const Frame& frame) {
     }
     
     MEASURE_LATENCY("publisher_publish_latency_ns");
+    // Update the rolling publish rate at the point frames are emitted to subscribers.
+    static const auto publish_rate_start = std::chrono::steady_clock::now();
     
     // Cache latest frame per topic (bounded cache)
     {
@@ -387,6 +389,13 @@ void PubServer::publish(const std::string& topic, const Frame& frame) {
     stats_.frames_published.fetch_add(1);
     MetricsCollector::instance().increment_counter("publisher_frames_published_total");
     MetricsCollector::instance().set_gauge("publisher_active_clients", clients_snapshot.size());
+
+    const double elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(
+        std::chrono::steady_clock::now() - publish_rate_start).count();
+    if (elapsed_seconds > 0.0) {
+        MetricsCollector::instance().set_gauge("publish_rate",
+            static_cast<double>(stats_.frames_published.load()) / elapsed_seconds);
+    }
 }
 
 void PubServer::add_virtual_topic_prefix(const std::string& prefix) {

@@ -226,6 +226,7 @@ void Replayer::playback_thread(const std::string& session_id) {
     }
     
     spdlog::info("Playback thread started for session {}", session_id);
+    const auto replay_start = std::chrono::steady_clock::now();
 
     std::optional<uint64_t> first_timestamp_ns;
     std::chrono::steady_clock::time_point wall_start;
@@ -319,6 +320,14 @@ void Replayer::playback_thread(const std::string& session_id) {
             publisher_->publish(virtual_topic, frame);
             session->frames_sent.fetch_add(1);
             stats_.total_frames_replayed.fetch_add(1);
+
+            // Update the rolling replay rate at the point replay frames are actually published.
+            const double elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(
+                std::chrono::steady_clock::now() - replay_start).count();
+            if (elapsed_seconds > 0.0) {
+                MetricsCollector::instance().set_gauge("replay_rate",
+                    static_cast<double>(session->frames_sent.load()) / elapsed_seconds);
+            }
         }
         
         MetricsCollector::instance().increment_counter("replayer_frames_sent_total");

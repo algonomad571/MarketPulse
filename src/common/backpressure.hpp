@@ -30,6 +30,7 @@ public:
             low_watermark_ = high_watermark_ - 1;
         }
 
+        // Update the aggregate queue depth metric on first use.
         MetricsCollector::instance().set_gauge(metric_name("queue_depth"), 0);
         MetricsCollector::instance().set_gauge(metric_name("backpressure_active"), 0);
     }
@@ -37,7 +38,9 @@ public:
     void wait_for_capacity(const std::function<size_t()>& queue_depth_fn,
                            const std::atomic<bool>* running = nullptr) {
         size_t depth = queue_depth_fn();
+        // Update the aggregate depth gauge at the exact point queue pressure is observed.
         MetricsCollector::instance().set_gauge(metric_name("queue_depth"), static_cast<double>(depth));
+        MetricsCollector::instance().set_gauge("queue_depth", static_cast<double>(depth));
 
         if (depth < high_watermark_) {
             return;
@@ -53,8 +56,12 @@ public:
         }
 
         if (should_log_activate) {
+            // Update pause counters where backpressure actually activates.
             MetricsCollector::instance().increment_counter(metric_name("producer_pauses"));
+            MetricsCollector::instance().increment_counter("producer_pauses");
+            active_queue_count().fetch_add(1, std::memory_order_relaxed);
             MetricsCollector::instance().set_gauge(metric_name("backpressure_active"), 1);
+            MetricsCollector::instance().set_gauge("backpressure_active", 1);
             spdlog::warn("[Backpressure] Activated queue={} depth={} high={} low={}",
                          queue_name_,
                          depth,
@@ -82,8 +89,12 @@ public:
         }
 
         if (should_log_release) {
+            // Update resume counters where backpressure actually releases.
             MetricsCollector::instance().increment_counter(metric_name("producer_resume_count"));
+            MetricsCollector::instance().increment_counter("producer_resume_count");
+            const uint64_t remaining_active = active_queue_count().fetch_sub(1, std::memory_order_relaxed);
             MetricsCollector::instance().set_gauge(metric_name("backpressure_active"), 0);
+            MetricsCollector::instance().set_gauge("backpressure_active", remaining_active > 1 ? 1 : 0);
             spdlog::info("[Backpressure] Released queue={} depth={} high={} low={}",
                          queue_name_,
                          depth,
@@ -93,6 +104,11 @@ public:
     }
 
 private:
+    static std::atomic<uint64_t>& active_queue_count() {
+        static std::atomic<uint64_t> count{0};
+        return count;
+    }
+
     std::string metric_name(const std::string& suffix) const {
         return "queue_" + queue_name_ + "_" + suffix;
     }

@@ -81,6 +81,7 @@ void MockFeed::set_rates(uint32_t l1_msgs_per_sec, uint32_t l2_msgs_per_sec, uin
 }
 
 void MockFeed::run_loop() {
+    const auto run_start = std::chrono::steady_clock::now();
     auto last_stats_time = std::chrono::steady_clock::now();
     const auto stats_interval = std::chrono::seconds(5);
     
@@ -150,6 +151,13 @@ void MockFeed::run_loop() {
                          stats_.trade_count.load(), stats_.total_events.load(),
                          burst_mode_.load());
             last_stats_time = now;
+        }
+
+        // Update the rolling ingestion rate where feed events are actually produced.
+        const double elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(now - run_start).count();
+        if (elapsed_seconds > 0.0) {
+            MetricsCollector::instance().set_gauge("ingestion_rate",
+                static_cast<double>(stats_.total_events.load()) / elapsed_seconds);
         }
         
         // Sleep to maintain target rate (approximately 1000 Hz loop)

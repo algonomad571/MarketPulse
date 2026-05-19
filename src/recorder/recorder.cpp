@@ -446,6 +446,7 @@ void Recorder::write_frame(const Frame& frame) {
     if (stats_.degraded_mode.load()) {
         stats_.write_errors.fetch_add(1);
         MetricsCollector::instance().increment_counter("recorder_degraded_drops_total");
+        MetricsCollector::instance().increment_counter("dropped_frames");
         return;  // Drop frames silently in degraded mode to prevent queue backup
     }
     

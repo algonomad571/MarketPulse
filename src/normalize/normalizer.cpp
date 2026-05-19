@@ -160,6 +160,7 @@ void Normalizer::worker_thread(uint32_t worker_index, std::stop_token token) {
     const size_t batch_size = 100;
     std::vector<RawEvent> events_batch;
     events_batch.reserve(batch_size);
+    static const auto normalizer_rate_start = std::chrono::steady_clock::now();
     auto last_log_time = std::chrono::steady_clock::now();
     uint64_t processed_since_log = 0;
     auto& partition_queue = partition_queues_[worker_index];
@@ -198,6 +199,7 @@ void Normalizer::worker_thread(uint32_t worker_index, std::stop_token token) {
                     spdlog::error("Failed to enqueue normalized frame (queue full?)");
                     stats_.errors.fetch_add(1);
                     MetricsCollector::instance().increment_counter("normalizer_enqueue_failures_total");
+                    MetricsCollector::instance().increment_counter("dropped_frames");
                 } else {
                     stats_.frames_output.fetch_add(1);
                 }
@@ -206,6 +208,7 @@ void Normalizer::worker_thread(uint32_t worker_index, std::stop_token token) {
                 stats_.errors.fetch_add(1);
                 MetricsCollector::instance().increment_counter("normalizer_errors_total");
                 MetricsCollector::instance().increment_counter("normalizer_failures_total");
+                MetricsCollector::instance().increment_counter("dropped_frames");
             }
             
             stats_.events_processed.fetch_add(1);
@@ -213,6 +216,18 @@ void Normalizer::worker_thread(uint32_t worker_index, std::stop_token token) {
 
         processed_since_log += dequeued;
         update_partition_metrics();
+
+        // Update the rolling normalization rate and latency snapshots where work is completed.
+        const double elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(
+            std::chrono::steady_clock::now() - normalizer_rate_start).count();
+        if (elapsed_seconds > 0.0) {
+            MetricsCollector::instance().set_gauge("normalization_rate",
+                static_cast<double>(stats_.events_processed.load()) / elapsed_seconds);
+        }
+        const auto normalizer_latency = MetricsCollector::instance().get_latency_percentiles("normalizer_event_latency_ns");
+        MetricsCollector::instance().set_gauge("p50_latency", static_cast<double>(normalizer_latency.p50));
+        MetricsCollector::instance().set_gauge("p99_latency", static_cast<double>(normalizer_latency.p99));
+
         const auto now = std::chrono::steady_clock::now();
         if (now - last_log_time >= std::chrono::seconds(5)) {
             spdlog::info(
