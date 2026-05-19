@@ -67,3 +67,5 @@ grafana-data/
 clickhouse-data/
 
 .bolt
+
+vcpkg_installed/

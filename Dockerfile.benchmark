@@ -1,0 +1,97 @@
+# Multi-stage build for the MarketPulse throughput benchmark.
+FROM ubuntu:22.04 AS builder
+
+RUN sed -i 's|archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list && \
+    sed -i 's|security.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+      -o Acquire::Retries=5 \
+      -o Acquire::http::Timeout="30" \
+      -o Acquire::https::Timeout="30" && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      ninja-build \
+      pkg-config \
+      git \
+      curl \
+      wget \
+      unzip \
+      tar \
+      libssl-dev \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /vcpkg
+ENV VCPKG_FORCE_SYSTEM_BINARIES=1
+RUN git clone --depth=1 https://github.com/Microsoft/vcpkg.git . && \
+    /bin/sh bootstrap-vcpkg.sh && \
+    git clean -fdx
+
+WORKDIR /app
+COPY vcpkg.json .
+RUN /vcpkg/vcpkg install \
+    --triplet x64-linux \
+    boost-asio \
+    boost-beast \
+    boost-system \
+    boost-filesystem \
+    boost-thread \
+    spdlog \
+    nlohmann-json \
+    fmt
+
+COPY CMakeLists.txt .
+COPY benchmarks/ benchmarks/
+COPY src/ src/
+COPY external/ external/
+COPY config.json .
+
+RUN mkdir -p build && cd build && \
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
+        -DWITH_BINANCE=OFF \
+        -DWITH_CLICKHOUSE=OFF \
+        -DBUILD_TESTS=OFF \
+        -DBUILD_BENCHMARKS=ON && \
+    cmake --build . --target throughput_benchmark --parallel $(nproc) && \
+    test -x /app/build/benchmarks/throughput_benchmark && \
+    /app/build/benchmarks/throughput_benchmark --producers=1 --duration=1
+
+FROM ubuntu:22.04
+
+RUN sed -i 's|archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list && \
+    sed -i 's|security.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+      -o Acquire::Retries=5 \
+      -o Acquire::http::Timeout="30" \
+      -o Acquire::https::Timeout="30" && \
+    apt-get install -y --no-install-recommends \
+      libgcc-s1 \
+      libstdc++6 \
+      libssl3 \
+      zlib1g \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash mduser && \
+    mkdir -p /app/data
+
+WORKDIR /app
+COPY --from=builder /app/build/benchmarks/throughput_benchmark ./throughput_benchmark
+COPY --from=builder /vcpkg/installed/x64-linux/lib/ /usr/local/lib/
+
+RUN chmod +x /app/throughput_benchmark && \
+    ldconfig /usr/local/lib || true && \
+    chown -R mduser:mduser /app
+
+ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
+
+USER mduser
+
+ENTRYPOINT ["/app/throughput_benchmark"]
+CMD ["--producers=1"]

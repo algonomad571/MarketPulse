@@ -28,6 +28,11 @@ services:
     networks:
       - marketpulse-net
 
+  benchmark:
+    build:
+      context: .
+      dockerfile: Dockerfile.benchmark
+
   ui:
     build:
       context: ./ui
