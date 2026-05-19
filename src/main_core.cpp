@@ -2,6 +2,7 @@
 #include "common/symbol_registry.hpp"
 #include "common/config.hpp"
 #include "common/metrics.hpp"
+#include "common/backpressure.hpp"
 #include "common/crc32.hpp"
 #include "feed/mock_feed.hpp"
 #include "normalize/normalizer.hpp"
@@ -189,13 +190,19 @@ private:
 
         symbol_registry_ = std::make_shared<SymbolRegistry>();
 
-        mock_feed_ = std::make_shared<MockFeed>(config_.feeds.default_symbols, feed_to_normalizer_);
+        mock_feed_ = std::make_shared<MockFeed>(
+            config_.feeds.default_symbols,
+            feed_to_normalizer_,
+            config_.queue.high_watermark,
+            config_.queue.low_watermark);
 
         normalizer_ = std::make_shared<Normalizer>(
             feed_to_normalizer_,
             normalizer_to_publisher_,
             symbol_registry_,
-            config_.pipeline.normalizer_threads);
+            config_.pipeline.normalizer_threads,
+            config_.queue.high_watermark,
+            config_.queue.low_watermark);
 
         recorder_ = std::make_shared<Recorder>(
             config_.storage.dir,
@@ -208,7 +215,14 @@ private:
         pub_server_ = std::make_shared<PubServer>(
             io_context_,
             config_.network.pubsub_port,
-            config_.security.token);
+            config_.security.token,
+            config_.queue.high_watermark,
+            config_.queue.low_watermark);
+
+        distributor_to_recorder_backpressure_ = std::make_unique<QueueBackpressureController>(
+            "distributor_to_recorder",
+            config_.queue.high_watermark,
+            config_.queue.low_watermark);
 
         replayer_ = std::make_shared<Replayer>(config_.storage.dir, pub_server_, symbol_registry_);
 
@@ -260,6 +274,9 @@ private:
                     std::string topic = generate_topic(frame);
                     pub_server_->publish(topic, frame);
 
+                    distributor_to_recorder_backpressure_->wait_for_capacity([this]() {
+                        return normalizer_to_recorder_->size_approx();
+                    }, &running_);
                     normalizer_to_recorder_->enqueue(frame);
                 }
 
@@ -337,6 +354,7 @@ private:
     std::shared_ptr<ControlServer> control_server_;
 
     std::unique_ptr<std::jthread> distribution_thread_;
+    std::unique_ptr<QueueBackpressureController> distributor_to_recorder_backpressure_;
 
     std::atomic<bool> running_{false};
     std::mutex shutdown_mutex_;

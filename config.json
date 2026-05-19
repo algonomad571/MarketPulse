@@ -20,6 +20,10 @@
     "recorder_fsync_ms": 50,
     "normalizer_threads": 4
   },
+  "queue": {
+    "high_watermark": 80000,
+    "low_watermark": 60000
+  },
   "feeds": {
     "default_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "DOGEUSDT"],
     "mock_enabled": true,

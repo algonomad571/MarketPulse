@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../common/frame.hpp"
+#include "../common/backpressure.hpp"
 #include <thread>
 #include <atomic>
 #include <memory>
@@ -37,7 +38,9 @@ struct RawEvent {
 class MockFeed {
 public:
     MockFeed(const std::vector<std::string>& symbols, 
-             std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>> output_queue);
+             std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>> output_queue,
+             uint32_t queue_high_watermark,
+             uint32_t queue_low_watermark);
     ~MockFeed();
     
     void start();
@@ -89,6 +92,7 @@ private:
     
     std::vector<SymbolState> symbol_states_;
     Stats stats_;
+    QueueBackpressureController queue_backpressure_;
     
     // Burst mode simulation
     std::atomic<bool> burst_mode_{false};

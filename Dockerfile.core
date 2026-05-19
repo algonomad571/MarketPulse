@@ -1,29 +1,49 @@
-# Multi-stage build for C++ application
+# Multi-stage build for C++ application with optimized layer caching
 FROM ubuntu:22.04 AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    ninja-build \
-    pkg-config \
-    git \
-    curl \
-    wget \
-    libboost-all-dev \
-    libssl-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    liblzma-dev \
+# Layer 1: System build tools (immutable, cached)
+# Use reliable mirror and robust retry configuration
+RUN sed -i 's|archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list && \
+    sed -i 's|security.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list
+
+# Clean apt cache and update with retries and timeouts
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+      -o Acquire::Retries=5 \
+      -o Acquire::http::Timeout="30" \
+      -o Acquire::https::Timeout="30" && \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      ninja-build \
+      pkg-config \
+      git \
+      curl \
+      wget \
+        zip \
+        unzip \
+      tar \
+      libssl-dev \
+      ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install vcpkg for package management
+# Layer 2: vcpkg installation (cached independently from dependencies)
+# Bootstrap vcpkg once - this layer is immutable
 WORKDIR /vcpkg
-RUN git clone https://github.com/Microsoft/vcpkg.git . && \
-    ./bootstrap-vcpkg.sh
+ENV VCPKG_FORCE_SYSTEM_BINARIES=1
+RUN git clone --depth=1 https://github.com/Microsoft/vcpkg.git . && \
+    /bin/sh bootstrap-vcpkg.sh && \
+    git clean -fdx
 
-# Install C++ dependencies via vcpkg
-RUN ./vcpkg install \
+# Layer 3: Copy vcpkg.json first (minimal, high cache hit rate)
+# This layer invalidates only when vcpkg.json changes
+WORKDIR /app
+COPY vcpkg.json .
+
+# Layer 4: Install C++ dependencies via vcpkg (cached based on vcpkg.json)
+# This layer rebuilds only if vcpkg.json changes
+RUN /vcpkg/vcpkg install \
+    --triplet x64-linux \
     boost-asio \
     boost-beast \
     boost-system \
@@ -33,55 +53,80 @@ RUN ./vcpkg install \
     nlohmann-json \
     fmt
 
-# Copy source code
-WORKDIR /app
+# Layer 5: Copy build configuration files (CMakeLists.txt)
+# Separate from source code - rarely changes
+COPY CMakeLists.txt .
+
+# Layer 6: Copy source code (highest change frequency, cached last)
+# This layer invalidates only when source code changes
 COPY src/ src/
 COPY external/ external/
-COPY CMakeLists.txt .
-COPY vcpkg.json .
 COPY config.json .
 
-# Build the application
-RUN mkdir build && cd build && \
+# Layer 7: Build application (final compilation)
+# Only runs if source or build config changes
+RUN mkdir -p build && cd build && \
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
         -DWITH_BINANCE=OFF \
-        -DWITH_CLICKHOUSE=OFF && \
-    cmake --build . --parallel $(nproc)
+        -DWITH_CLICKHOUSE=OFF \
+        -DBUILD_TESTS=OFF \
+        -DBUILD_BENCHMARKS=OFF && \
+    cmake --build . --target md_core_main --parallel $(nproc)
 
-# Runtime stage
+# Runtime stage (minimal final image)
 FROM ubuntu:22.04
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libboost-system1.74.0 \
-    libboost-filesystem1.74.0 \
-    libboost-thread1.74.0 \
-    libssl3 \
-    curl \
+# Layer 1: Runtime dependencies only (no build tools)
+# Use reliable mirror and robust retry configuration
+RUN sed -i 's|archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list && \
+    sed -i 's|security.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list
+
+# Clean apt cache and update with retries and timeouts
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    DEBIAN_FRONTEND=noninteractive apt-get update \
+      -o Acquire::Retries=5 \
+      -o Acquire::http::Timeout="30" \
+      -o Acquire::https::Timeout="30" && \
+    apt-get install -y --no-install-recommends \
+      libgcc-s1 \
+      libstdc++6 \
+      libssl3 \
+      zlib1g \
+      curl \
+      ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Create application user
-RUN useradd -m -s /bin/bash mduser
+# Layer 2: Application setup
+# Create application user and directories
+RUN useradd -m -s /bin/bash mduser && \
+    mkdir -p /app/data
 
-# Copy built application
+# Layer 3: Copy built artifacts from builder
 WORKDIR /app
 COPY --from=builder /app/build/md_core_main .
 COPY --from=builder /app/config.json .
+COPY --from=builder /vcpkg/installed/x64-linux/lib/ /usr/local/lib/
 
-# Create data directory
-RUN mkdir -p data && chown -R mduser:mduser /app
+# Layer 4: Configure runtime environment
+RUN chmod +x /app/md_core_main && \
+    ldconfig /usr/local/lib || true && \
+    chown -R mduser:mduser /app
 
-# Switch to application user
+# Set library path for runtime
+ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
+
+# Switch to application user for security
 USER mduser
 
-# Expose ports
+# Expose service ports
 EXPOSE 8080 8081 9100
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Health check (aligned with docker-compose: 10s interval, 5s timeout, 10s start_period, 5 retries)
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
+    CMD curl -f http://localhost:8080/metrics || exit 1
 
-# Start the application
-CMD ["./md_core_main", "config.json"]
+# Start application with config
+ENTRYPOINT ["./md_core_main"]
+CMD ["config.json"]

@@ -19,25 +19,33 @@ import { Clock, Activity, Database, TrendingUp, AlertTriangle } from 'lucide-rea
 import { useWebSocket } from '../hooks/useWebSocket';
 import MetricsCard from '../components/MetricsCard';
 
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
+
 interface MetricsData {
   timestamp_ns: number;
-  counters: Record<string, number>;
-  gauges: Record<string, number>;
-  histograms: Record<string, {
-    p50: number;
-    p95: number;
-    p99: number;
-    p999: number;
-    max: number;
-    count: number;
-  }>;
+  throughput?: {
+    feed_events_ingested_total?: number;
+    normalizer_events_total?: number;
+    publisher_frames_published_total?: number;
+    recorder_frames_total?: number;
+    frame_distribution_total?: number;
+  };
+  latency?: {
+    normalizer_event_latency_ns?: { p50?: number; p99?: number };
+    publisher_publish_latency_ns?: { p50?: number; p99?: number };
+    recorder_write_frame_ns?: { p50?: number; p99?: number };
+  };
+  queue_depths?: {
+    pipeline_feed_queue_approx?: number;
+    pipeline_normalizer_to_publisher_queue_approx?: number;
+    pipeline_normalizer_to_recorder_queue_approx?: number;
+  };
 }
 
 interface TimeSeriesData {
   timestamp: number;
   throughput: number;
   latency_p50: number;
-  latency_p95: number;
   latency_p99: number;
   queue_depth: number;
   connections: number;
@@ -48,24 +56,22 @@ export default function MetricsPage() {
   const [currentMetrics, setCurrentMetrics] = useState<MetricsData | null>(null);
   const [timeRange, setTimeRange] = useState<'5m' | '15m' | '1h' | '4h'>('15m');
   
-  const { lastMessage, isConnected } = useWebSocket('ws://localhost:8081/ws/metrics', {
+  const { isConnected } = useWebSocket(WS_URL, {
     onMessage: (data: MetricsData) => {
       setCurrentMetrics(data);
       
+      const throughput = data.throughput || {};
+      const latency = data.latency?.normalizer_event_latency_ns || {};
+      const queueDepths = data.queue_depths || {};
+
       // Add to history
       const newDataPoint: TimeSeriesData = {
         timestamp: Date.now(),
-        throughput: (data.counters?.['mock_feed_l1_total'] || 0) + 
-                   (data.counters?.['mock_feed_l2_total'] || 0) + 
-                   (data.counters?.['mock_feed_trade_total'] || 0),
-        latency_p50: data.histograms?.['normalize_event_ns']?.p50 ? 
-                     Math.round(data.histograms['normalize_event_ns'].p50 / 1000) : 0,
-        latency_p95: data.histograms?.['normalize_event_ns']?.p95 ? 
-                     Math.round(data.histograms['normalize_event_ns'].p95 / 1000) : 0,
-        latency_p99: data.histograms?.['normalize_event_ns']?.p99 ? 
-                     Math.round(data.histograms['normalize_event_ns'].p99 / 1000) : 0,
-        queue_depth: data.gauges?.['publisher_active_clients'] || 0,
-        connections: data.gauges?.['publisher_active_clients'] || 0
+        throughput: throughput.feed_events_ingested_total || 0,
+        latency_p50: latency.p50 ? Math.round(latency.p50 / 1000) : 0,
+        latency_p99: latency.p99 ? Math.round(latency.p99 / 1000) : 0,
+        queue_depth: queueDepths.pipeline_feed_queue_approx || 0,
+        connections: queueDepths.pipeline_normalizer_to_publisher_queue_approx || 0
       };
       
       setMetricsHistory(prev => {
@@ -91,12 +97,10 @@ export default function MetricsPage() {
     return 'text-red-600'; // >= 5ms
   };
 
-  const currentThroughput = currentMetrics ? 
-    (currentMetrics.counters?.['mock_feed_l1_total'] || 0) + 
-    (currentMetrics.counters?.['mock_feed_l2_total'] || 0) + 
-    (currentMetrics.counters?.['mock_feed_trade_total'] || 0) : 0;
+  const currentThroughput = currentMetrics?.throughput?.feed_events_ingested_total || 0;
 
-  const currentLatency = currentMetrics?.histograms?.['normalize_event_ns'];
+  const currentLatency = currentMetrics?.latency?.normalizer_event_latency_ns;
+  const currentQueueDepths = currentMetrics?.queue_depths || {};
 
   return (
     <div className="p-8">
@@ -156,8 +160,8 @@ export default function MetricsPage() {
         />
         
         <MetricsCard
-          title="Active Connections"
-          value={currentMetrics?.gauges?.['publisher_active_clients'] || 0}
+          title="Queue Depth"
+          value={currentQueueDepths.pipeline_feed_queue_approx || 0}
           icon={<Database className="h-8 w-8" />}
           color="purple"
         />
@@ -228,14 +232,6 @@ export default function MetricsPage() {
               />
               <Line
                 type="monotone"
-                dataKey="latency_p95"
-                stroke="#f59e0b"
-                strokeWidth={2}
-                name="P95"
-                dot={false}
-              />
-              <Line
-                type="monotone"
                 dataKey="latency_p99"
                 stroke="#ef4444"
                 strokeWidth={2}
@@ -249,13 +245,13 @@ export default function MetricsPage() {
 
       {/* Detailed Metrics Tables */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Counters */}
+        {/* Throughput */}
         <div className="card">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Event Counters
+            Throughput
           </h3>
           <div className="space-y-3">
-            {currentMetrics?.counters && Object.entries(currentMetrics.counters).map(([key, value]) => (
+            {currentMetrics?.throughput && Object.entries(currentMetrics.throughput).map(([key, value]) => (
               <div key={key} className="flex justify-between items-center py-2 border-b border-gray-100 last:border-b-0">
                 <span className="text-sm text-gray-600">
                   {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
@@ -268,50 +264,22 @@ export default function MetricsPage() {
           </div>
         </div>
 
-        {/* Histograms */}
+        {/* Queue Depths */}
         <div className="card">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            Latency Percentiles
+            Queue Depths
           </h3>
           <div className="space-y-3">
-            {currentMetrics?.histograms && Object.entries(currentMetrics.histograms).map(([key, hist]) => (
+            {currentMetrics?.queue_depths && Object.entries(currentMetrics.queue_depths).map(([key, value]) => (
               <div key={key} className="border border-gray-200 rounded-lg p-3">
                 <h4 className="font-medium text-gray-900 mb-2">
                   {key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                 </h4>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">P50:</span>
-                    <span className={`font-mono ${getLatencyColor(hist.p50)}`}>
-                      {Math.round(hist.p50 / 1000)}μs
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">P95:</span>
-                    <span className={`font-mono ${getLatencyColor(hist.p95)}`}>
-                      {Math.round(hist.p95 / 1000)}μs
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">P99:</span>
-                    <span className={`font-mono ${getLatencyColor(hist.p99)}`}>
-                      {Math.round(hist.p99 / 1000)}μs
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Max:</span>
-                    <span className={`font-mono ${getLatencyColor(hist.max)}`}>
-                      {Math.round(hist.max / 1000)}μs
-                    </span>
-                  </div>
-                </div>
-                <div className="mt-2 pt-2 border-t border-gray-100">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Count:</span>
-                    <span className="font-mono text-gray-900">
-                      {hist.count.toLocaleString()}
-                    </span>
-                  </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Depth:</span>
+                  <span className="font-mono text-gray-900">
+                    {value.toLocaleString()}
+                  </span>
                 </div>
               </div>
             ))}

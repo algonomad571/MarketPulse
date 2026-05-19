@@ -28,12 +28,18 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
   const reconnectTimeoutId = useRef<NodeJS.Timeout | null>(null);
 
   const connectWebSocket = () => {
+    if (!url) {
+      console.error('WS error: NEXT_PUBLIC_WS_URL is not configured');
+      return;
+    }
+
     try {
       websocket.current = new WebSocket(url);
       
       websocket.current.onopen = () => {
         setReadyState(WebSocket.OPEN);
         reconnectAttempts.current = 0;
+        console.log('WS connected');
         onOpen?.();
       };
 
@@ -49,6 +55,7 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
 
       websocket.current.onclose = () => {
         setReadyState(WebSocket.CLOSED);
+        console.log(`WebSocket disconnected: ${url}`);
         onClose?.();
         
         // Attempt reconnection
@@ -62,12 +69,12 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
       };
 
       websocket.current.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        console.error('WS error', error);
         onError?.(error);
       };
 
     } catch (error) {
-      console.error('Failed to create WebSocket connection:', error);
+      console.error('WS error', error);
     }
   };
 

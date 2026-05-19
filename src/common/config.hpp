@@ -34,6 +34,11 @@ struct PipelineConfig {
     uint32_t normalizer_threads = 4;
 };
 
+struct QueueConfig {
+    uint32_t high_watermark = 80000;
+    uint32_t low_watermark = 60000;
+};
+
 struct FeedsConfig {
     std::vector<std::string> default_symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"};
     bool mock_enabled = true;
@@ -46,6 +51,7 @@ struct Config {
     StorageConfig storage;
     MetricsConfig metrics;
     PipelineConfig pipeline;
+    QueueConfig queue;
     FeedsConfig feeds;
     
     static Config load_from_file(const std::string& path);

@@ -41,6 +41,12 @@ Config Config::load_from_file(const std::string& path) {
             if (pipe.contains("recorder_fsync_ms")) config.pipeline.recorder_fsync_ms = pipe["recorder_fsync_ms"];
             if (pipe.contains("normalizer_threads")) config.pipeline.normalizer_threads = pipe["normalizer_threads"];
         }
+
+        if (j.contains("queue")) {
+            auto& queue = j["queue"];
+            if (queue.contains("high_watermark")) config.queue.high_watermark = queue["high_watermark"];
+            if (queue.contains("low_watermark")) config.queue.low_watermark = queue["low_watermark"];
+        }
         
         if (j.contains("feeds")) {
             auto& feeds = j["feeds"];

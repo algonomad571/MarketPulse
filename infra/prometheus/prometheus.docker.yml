@@ -9,10 +9,11 @@ rule_files:
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ['prometheus:9090']
 
   - job_name: 'marketpulse-core'
     static_configs:
+      # Docker Compose service DNS resolves core on marketpulse-net.
       - targets: ['core:8080']
     metrics_path: '/metrics'
     scrape_interval: 1s

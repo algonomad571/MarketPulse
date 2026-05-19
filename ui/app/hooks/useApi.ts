@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react';
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL;
+
 interface ApiResponse<T> {
   data: T | null;
   loading: boolean;
@@ -18,8 +20,12 @@ export function useApi<T>(url: string, initialData: T | null = null): ApiRespons
     try {
       setLoading(true);
       setError(null);
+
+      if (!API_BASE) {
+        throw new Error('NEXT_PUBLIC_API_URL is not configured');
+      }
       
-      const response = await fetch(`/api${url}`);
+      const response = await fetch(`${API_BASE}${url}`);
       
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -28,6 +34,7 @@ export function useApi<T>(url: string, initialData: T | null = null): ApiRespons
       const result = await response.json();
       setData(result);
     } catch (err) {
+      console.error(`API request failed for ${API_BASE}${url}:`, err);
       setError(err instanceof Error ? err.message : 'Unknown error occurred');
     } finally {
       setLoading(false);
@@ -47,7 +54,11 @@ export function useApi<T>(url: string, initialData: T | null = null): ApiRespons
 }
 
 export async function apiPost<T>(url: string, body: any): Promise<T> {
-  const response = await fetch(`/api${url}`, {
+  if (!API_BASE) {
+    throw new Error('NEXT_PUBLIC_API_URL is not configured');
+  }
+
+  const response = await fetch(`${API_BASE}${url}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

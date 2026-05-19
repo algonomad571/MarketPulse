@@ -23,6 +23,7 @@
 // - Review client behavior if drop rates high
 
 #include "../common/frame.hpp"
+#include "../common/backpressure.hpp"
 #include <boost/asio.hpp>
 #include <memory>
 #include <vector>
@@ -50,7 +51,9 @@ struct TopicSubscription {
 class ClientConnection : public std::enable_shared_from_this<ClientConnection> {
 public:
     ClientConnection(boost::asio::ip::tcp::socket socket, 
-                     const std::string& auth_token);
+                     const std::string& auth_token,
+                     uint32_t queue_high_watermark,
+                     uint32_t queue_low_watermark);
     
     void start();
     void stop();
@@ -89,7 +92,8 @@ private:
     // Buffer management
     std::vector<std::byte> write_buffer_;
     std::string read_buffer_;
-    static constexpr size_t MAX_QUEUE_SIZE = 10000;
+    uint32_t queue_high_watermark_;
+    uint32_t queue_low_watermark_;
     
     std::atomic<uint64_t> frames_sent_{0};
     std::atomic<uint64_t> frames_dropped_{0};
@@ -99,7 +103,9 @@ class PubServer {
 public:
     explicit PubServer(boost::asio::io_context& io_context, 
                        uint16_t port, 
-                       const std::string& auth_token);
+                       const std::string& auth_token,
+                       uint32_t queue_high_watermark,
+                       uint32_t queue_low_watermark);
     
     ~PubServer();
     
@@ -147,6 +153,9 @@ private:
     static constexpr size_t MAX_CACHED_TOPICS = 10000;
     
     std::unique_ptr<std::jthread> heartbeat_thread_;
+    QueueBackpressureController queue_backpressure_;
+    uint32_t queue_high_watermark_;
+    uint32_t queue_low_watermark_;
     Stats stats_;
 };
 

@@ -35,9 +35,12 @@ namespace {
 Normalizer::Normalizer(std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>> input_queue,
                        std::shared_ptr<moodycamel::ConcurrentQueue<Frame>> output_queue,
                        std::shared_ptr<SymbolRegistry> symbol_registry,
-                       uint32_t num_threads)
-    : input_queue_(input_queue), output_queue_(output_queue), 
-      symbol_registry_(symbol_registry), num_threads_(num_threads) {
+                                             uint32_t num_threads,
+                                             uint32_t queue_high_watermark,
+                                             uint32_t queue_low_watermark)
+        : input_queue_(input_queue), output_queue_(output_queue),
+            symbol_registry_(symbol_registry), num_threads_(num_threads),
+            queue_backpressure_("normalizer_to_distributor", queue_high_watermark, queue_low_watermark) {
 }
 
 Normalizer::~Normalizer() {
@@ -108,10 +111,9 @@ void Normalizer::worker_thread() {
             try {
                 Frame frame = normalize_event(events_batch[i]);
                 
-                // HARDENING: Queue enqueue is lock-free and always succeeds
-                // ASSUMPTION: Output queue has sufficient capacity
-                // LIMITATION: If queue is full, enqueue may fail silently in lock-free implementation
-                // NOTE: moodycamel::ConcurrentQueue grows dynamically, enqueue rarely fails
+                queue_backpressure_.wait_for_capacity([this]() {
+                    return output_queue_->size_approx();
+                }, &running_);
                 bool enqueued = output_queue_->enqueue(std::move(frame));
                 if (!enqueued) {
                     spdlog::error("Failed to enqueue normalized frame (queue full?)");

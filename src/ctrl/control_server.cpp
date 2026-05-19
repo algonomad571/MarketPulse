@@ -226,7 +226,8 @@ void ControlServer::start() {
 
         start_metrics_websocket();
 
-        spdlog::info("ControlServer listening on HTTP port {}", http_port_);
+        spdlog::info("ControlServer listening on 0.0.0.0:{}", http_port_);
+        spdlog::info("ControlServer metrics available at http://0.0.0.0:{}/metrics", http_port_);
     } catch (...) {
         stop();
         throw;

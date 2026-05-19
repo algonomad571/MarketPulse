@@ -26,8 +26,13 @@ TopicSubscription::TopicSubscription(const std::string& pattern, bool lossless)
 }
 
 ClientConnection::ClientConnection(boost::asio::ip::tcp::socket socket, 
-                                   const std::string& auth_token)
-    : socket_(std::move(socket)), auth_token_(auth_token) {
+                                                                     const std::string& auth_token,
+                                                                     uint32_t queue_high_watermark,
+                                                                     uint32_t queue_low_watermark)
+        : socket_(std::move(socket)),
+            auth_token_(auth_token),
+            queue_high_watermark_(queue_high_watermark),
+            queue_low_watermark_(queue_low_watermark) {
     
     send_queue_ = std::make_unique<moodycamel::ConcurrentQueue<QueuedFrame>>();
     write_buffer_.reserve(64 * 1024); // 64KB buffer
@@ -68,33 +73,6 @@ void ClientConnection::stop() {
 void ClientConnection::send_frame(const std::string& topic, const Frame& frame) {
     if (!running_.load() || !authenticated_.load()) {
         return;
-    }
-    
-    // Check queue depth
-    if (send_queue_->size_approx() >= MAX_QUEUE_SIZE) {
-        // Apply backpressure policy
-        bool is_lossless = false;
-        {
-            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-            for (const auto& sub : subscriptions_) {
-                if (sub.lossless) {
-                    is_lossless = true;
-                    break;
-                }
-            }
-        }
-        
-        if (is_lossless) {
-            // For lossless subscribers, we should block or apply backpressure
-            // For now, just drop and warn
-            frames_dropped_.fetch_add(1);
-            MetricsCollector::instance().increment_counter("publisher_frames_dropped_backpressure");
-            return;
-        } else {
-            frames_dropped_.fetch_add(1);
-            MetricsCollector::instance().increment_counter("publisher_frames_dropped_queue_full");
-            return;
-        }
     }
     
     QueuedFrame queued_frame;
@@ -296,9 +274,15 @@ void ClientConnection::process_control_message(const std::string& message) {
 
 PubServer::PubServer(boost::asio::io_context& io_context, 
                      uint16_t port, 
-                     const std::string& auth_token)
+               const std::string& auth_token,
+               uint32_t queue_high_watermark,
+               uint32_t queue_low_watermark)
     : io_context_(io_context), acceptor_(io_context, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)),
-      auth_token_(auth_token), port_(port) {
+    auth_token_(auth_token),
+    port_(port),
+    queue_backpressure_("distributor_to_publisher", queue_high_watermark, queue_low_watermark),
+    queue_high_watermark_(queue_high_watermark),
+    queue_low_watermark_(queue_low_watermark) {
 }
 
 PubServer::~PubServer() {
@@ -366,7 +350,9 @@ void PubServer::publish(const std::string& topic, const Frame& frame) {
         clients_snapshot = clients_;
     }
     
-    uint32_t clients_sent = 0;
+    std::vector<std::shared_ptr<ClientConnection>> subscribed_clients;
+    subscribed_clients.reserve(clients_snapshot.size());
+
     for (auto& client : clients_snapshot) {
         if (!client->is_authenticated()) {
             continue;
@@ -382,9 +368,20 @@ void PubServer::publish(const std::string& topic, const Frame& frame) {
         }
         
         if (should_send) {
-            client->send_frame(topic, frame);
-            clients_sent++;
+            subscribed_clients.push_back(client);
         }
+    }
+
+    queue_backpressure_.wait_for_capacity([&subscribed_clients]() {
+        size_t max_depth = 0;
+        for (const auto& client : subscribed_clients) {
+            max_depth = std::max(max_depth, static_cast<size_t>(client->get_queue_depth()));
+        }
+        return max_depth;
+    }, &running_);
+
+    for (const auto& client : subscribed_clients) {
+        client->send_frame(topic, frame);
     }
     
     stats_.frames_published.fetch_add(1);
@@ -459,7 +456,11 @@ void PubServer::accept_connections() {
             }
             
             try {
-                auto client = std::make_shared<ClientConnection>(std::move(*new_socket), auth_token_);
+                auto client = std::make_shared<ClientConnection>(
+                    std::move(*new_socket),
+                    auth_token_,
+                    queue_high_watermark_,
+                    queue_low_watermark_);
                 
                 {
                     std::lock_guard<std::mutex> lock(clients_mutex_);

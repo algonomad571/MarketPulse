@@ -8,8 +8,12 @@
 namespace md {
 
 MockFeed::MockFeed(const std::vector<std::string>& symbols,
-                   std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>> output_queue)
-    : symbols_(symbols), output_queue_(output_queue) {
+                                     std::shared_ptr<moodycamel::ConcurrentQueue<RawEvent>> output_queue,
+                                     uint32_t queue_high_watermark,
+                                     uint32_t queue_low_watermark)
+        : symbols_(symbols),
+            output_queue_(output_queue),
+            queue_backpressure_("feed_to_normalizer", queue_high_watermark, queue_low_watermark) {
     
     symbol_states_.reserve(symbols_.size());
     
@@ -189,6 +193,9 @@ void MockFeed::generate_l1_event(const std::string& symbol) {
         state.ask_levels[0] = {event.ask_price, event.ask_size};
     }
     
+    queue_backpressure_.wait_for_capacity([this]() {
+        return output_queue_->size_approx();
+    }, &running_);
     output_queue_->enqueue(event);
     stats_.l1_count.fetch_add(1);
     stats_.total_events.fetch_add(1);
@@ -248,6 +255,9 @@ void MockFeed::generate_l2_event(const std::string& symbol) {
         levels[level] = {event.price, event.size};
     }
     
+    queue_backpressure_.wait_for_capacity([this]() {
+        return output_queue_->size_approx();
+    }, &running_);
     output_queue_->enqueue(event);
     stats_.l2_count.fetch_add(1);
     stats_.total_events.fetch_add(1);
@@ -273,6 +283,9 @@ void MockFeed::generate_trade_event(const std::string& symbol) {
     event.aggressor_side = (state.rng() % 2 == 0) ? 0 : 1; // Buy or Sell
     event.sequence = state.sequence++;
     
+    queue_backpressure_.wait_for_capacity([this]() {
+        return output_queue_->size_approx();
+    }, &running_);
     output_queue_->enqueue(event);
     stats_.trade_count.fetch_add(1);
     stats_.total_events.fetch_add(1);

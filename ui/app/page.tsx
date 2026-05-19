@@ -14,6 +14,8 @@ import LoadingSpinner from './components/LoadingSpinner';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useApi } from './hooks/useApi';
 
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL;
+
 interface HealthData {
   status: string;
   timestamp: number;
@@ -43,59 +45,61 @@ interface HealthData {
   };
 }
 
-interface MetricsData {
+interface LiveMetricsData {
   timestamp_ns: number;
-  counters: Record<string, number>;
-  gauges: Record<string, number>;
-  histograms: Record<string, {
-    p50: number;
-    p95: number;
-    p99: number;
-    p999: number;
-    max: number;
-    count: number;
-  }>;
+  throughput?: {
+    feed_events_ingested_total?: number;
+    normalizer_events_total?: number;
+    publisher_frames_published_total?: number;
+    recorder_frames_total?: number;
+    frame_distribution_total?: number;
+  };
+  latency?: {
+    normalizer_event_latency_ns?: { p50?: number; p99?: number };
+    publisher_publish_latency_ns?: { p50?: number; p99?: number };
+    recorder_write_frame_ns?: { p50?: number; p99?: number };
+  };
+  queue_depths?: {
+    pipeline_feed_queue_approx?: number;
+    pipeline_normalizer_to_publisher_queue_approx?: number;
+    pipeline_normalizer_to_recorder_queue_approx?: number;
+  };
 }
 
 export default function OverviewPage() {
-  const [metricsData, setMetricsData] = useState<MetricsData | null>(null);
+  const [metricsData, setMetricsData] = useState<LiveMetricsData | null>(null);
   const { data: healthData, loading: healthLoading, error: healthError } = useApi<HealthData>('/health');
   
-  // WebSocket connection for real-time metrics (would connect to ws://localhost:8081/ws/metrics)
-  const { lastMessage, isConnected } = useWebSocket('ws://localhost:8081/ws/metrics', {
-    onMessage: (data: MetricsData) => {
+  const { isConnected } = useWebSocket(WS_URL, {
+    onMessage: (data: LiveMetricsData) => {
       setMetricsData(data);
     },
     onError: (error) => {
-      console.error('WebSocket error:', error);
+      console.error('WS error', error);
     }
   });
 
-  // Calculate throughput from counters
   const getThroughput = () => {
-    if (!metricsData) return { l1: 0, l2: 0, trade: 0, total: 0 };
-    
-    const l1 = metricsData.counters['mock_feed_l1_total'] || 0;
-    const l2 = metricsData.counters['mock_feed_l2_total'] || 0;
-    const trade = metricsData.counters['mock_feed_trade_total'] || 0;
+    const throughput = metricsData?.throughput;
+    const feed = throughput?.feed_events_ingested_total || 0;
+    const normalized = throughput?.normalizer_events_total || 0;
+    const published = throughput?.publisher_frames_published_total || 0;
+    const recorded = throughput?.recorder_frames_total || 0;
     
     return {
-      l1,
-      l2,
-      trade,
-      total: l1 + l2 + trade
+      feed,
+      normalized,
+      published,
+      recorded,
+      total: feed || normalized || published || recorded || 0,
     };
   };
 
-  // Get latency metrics
   const getLatencyMetrics = () => {
-    if (!metricsData?.histograms) return { p50: 0, p95: 0, p99: 0 };
-    
-    const ingestNorm = metricsData.histograms['normalize_event_ns'];
+    const latency = metricsData?.latency?.normalizer_event_latency_ns;
     return {
-      p50: ingestNorm?.p50 ? Math.round(ingestNorm.p50 / 1000) : 0, // Convert ns to μs
-      p95: ingestNorm?.p95 ? Math.round(ingestNorm.p95 / 1000) : 0,
-      p99: ingestNorm?.p99 ? Math.round(ingestNorm.p99 / 1000) : 0,
+      p50: latency?.p50 ? Math.round(latency.p50 / 1000) : 0,
+      p99: latency?.p99 ? Math.round(latency.p99 / 1000) : 0,
     };
   };
 
@@ -122,6 +126,7 @@ export default function OverviewPage() {
   const throughput = getThroughput();
   const latency = getLatencyMetrics();
   const components = healthData?.components || {};
+  const queueDepths = metricsData?.queue_depths || {};
 
   return (
     <div className="p-8">
@@ -161,8 +166,8 @@ export default function OverviewPage() {
         />
         
         <MetricsCard
-          title="Active Connections"
-          value={components.publisher?.active_connections || 0}
+          title="Feed Queue"
+          value={queueDepths.pipeline_feed_queue_approx || 0}
           icon={<Users className="h-8 w-8" />}
           color="purple"
         />
@@ -272,26 +277,26 @@ export default function OverviewPage() {
           
           <div className="text-center">
             <div className="text-3xl font-bold text-yellow-600 mb-2">
-              {latency.p95}μs
-            </div>
-            <div className="text-sm text-gray-500">P95 Latency</div>
-            <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
-              <div 
-                className="bg-yellow-500 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${Math.min(100, (latency.p95 / 10000) * 100)}%` }}
-              ></div>
-            </div>
-          </div>
-          
-          <div className="text-center">
-            <div className="text-3xl font-bold text-red-600 mb-2">
               {latency.p99}μs
             </div>
             <div className="text-sm text-gray-500">P99 Latency</div>
             <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
               <div 
-                className="bg-red-500 h-2 rounded-full transition-all duration-300"
+                className="bg-yellow-500 h-2 rounded-full transition-all duration-300"
                 style={{ width: `${Math.min(100, (latency.p99 / 10000) * 100)}%` }}
+              ></div>
+            </div>
+          </div>
+          
+          <div className="text-center">
+            <div className="text-3xl font-bold text-purple-600 mb-2">
+              {queueDepths.pipeline_feed_queue_approx || 0}
+            </div>
+            <div className="text-sm text-gray-500">Feed Queue Depth</div>
+            <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+              <div 
+                className="bg-purple-500 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${Math.min(100, ((queueDepths.pipeline_feed_queue_approx || 0) / 10000) * 100)}%` }}
               ></div>
             </div>
           </div>

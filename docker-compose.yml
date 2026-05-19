@@ -1,8 +1,14 @@
 services:
   core:
+    container_name: core
     build:
       context: .
       dockerfile: Dockerfile.core
+      network: host
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+      - 8.8.4.4
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -13,12 +19,14 @@ services:
       - LOG_LEVEL=info
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD", "curl", "-f", "http://localhost:8080/metrics"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    hostname: core
     networks:
-      - md-network
+      - marketpulse-net
 
   ui:
     build:
@@ -28,34 +36,38 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://core:8080
-      - NEXT_PUBLIC_WS_URL=ws://core:8081
+      - NEXT_PUBLIC_WS_URL=ws://core:8081/ws/metrics
     depends_on:
       core:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - md-network
+      - marketpulse-net
 
   prometheus:
     image: prom/prometheus:latest
+    container_name: prometheus
     ports:
       - "9090:9090"
     volumes:
-      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/prometheus.docker.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=15d'
       - '--web.enable-lifecycle'
+      - '--log.level=debug'
     depends_on:
-      - core
+      core:
+        condition: service_healthy
     restart: unless-stopped
     networks:
-      - md-network
+      - marketpulse-net
 
   grafana:
     image: grafana/grafana:latest
+    container_name: grafana
     ports:
       - "3001:3000"
     environment:
@@ -65,12 +77,13 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./infra/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./infra/grafana/datasources/prometheus.docker.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
     restart: unless-stopped
     networks:
-      - md-network
+      - marketpulse-net
 
 volumes:
   core-data:
@@ -78,5 +91,10 @@ volumes:
   grafana-data:
 
 networks:
-  md-network:
+  marketpulse-net:
     driver: bridge
+    driver_opts:
+      com.docker.driver.mtu: 1500
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
