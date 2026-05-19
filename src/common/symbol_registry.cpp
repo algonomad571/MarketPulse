@@ -1,4 +1,5 @@
 #include "symbol_registry.hpp"
+#include<mutex>
 
 namespace md {
 

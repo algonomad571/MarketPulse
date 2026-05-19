@@ -1,5 +1,5 @@
 # Multi-stage build for C++ application with optimized layer caching
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 # Layer 1: System build tools (immutable, cached)
 # Use reliable mirror and robust retry configuration
@@ -20,20 +20,26 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
       git \
       curl \
       wget \
-        zip \
-        unzip \
+      zip \
+      unzip \
       tar \
       libssl-dev \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+RUN cmake --version
+
 # Layer 2: vcpkg installation (cached independently from dependencies)
 # Bootstrap vcpkg once - this layer is immutable
 WORKDIR /vcpkg
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
+
 RUN git clone --depth=1 https://github.com/Microsoft/vcpkg.git . && \
-    /bin/sh bootstrap-vcpkg.sh && \
-    git clean -fdx
+    chmod +x bootstrap-vcpkg.sh && \
+    ./bootstrap-vcpkg.sh
+
+RUN ls -la /vcpkg && \
+    test -f /vcpkg/vcpkg
 
 # Layer 3: Copy vcpkg.json first (minimal, high cache hit rate)
 # This layer invalidates only when vcpkg.json changes
@@ -41,18 +47,16 @@ WORKDIR /app
 COPY vcpkg.json .
 
 # Layer 4: Install C++ dependencies via vcpkg (cached based on vcpkg.json)
-# This layer rebuilds only if vcpkg.json changes
-RUN /vcpkg/vcpkg install \
-    --triplet x64-linux \
-    boost-asio \
-    boost-beast \
-    boost-system \
-    boost-filesystem \
-    boost-thread \
-    spdlog \
-    nlohmann-json \
-    fmt
+RUN /vcpkg/vcpkg version && \
+    cat vcpkg.json && \
+    /vcpkg/vcpkg install --triplet=x64-linux --debug || \
+    (echo "================ BOOST OUT LOG ================" && \
+     cat /vcpkg/buildtrees/boost-headers/config-x64-linux-out.log 2>/dev/null || true && \
+     echo "================ BOOST CACHE LOG ================" && \
+     cat /vcpkg/buildtrees/boost-headers/config-x64-linux-rel-CMakeCache.txt.log 2>/dev/null || true && \
+     false) 
 
+RUN find / -type d -name "*vcpkg_installed*" 2>/dev/null
 # Layer 5: Copy build configuration files (CMakeLists.txt)
 # Separate from source code - rarely changes
 COPY CMakeLists.txt .
@@ -107,7 +111,7 @@ RUN useradd -m -s /bin/bash mduser && \
 WORKDIR /app
 COPY --from=builder /app/build/md_core_main .
 COPY --from=builder /app/config.json .
-COPY --from=builder /vcpkg/installed/x64-linux/lib/ /usr/local/lib/
+COPY --from=builder /app/vcpkg_installed/x64-linux/lib/ /usr/local/lib/
 
 # Layer 4: Configure runtime environment
 RUN chmod +x /app/md_core_main && \

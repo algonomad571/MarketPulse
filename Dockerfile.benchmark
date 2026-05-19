@@ -1,5 +1,5 @@
 # Multi-stage build for the MarketPulse throughput benchmark.
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 RUN sed -i 's|archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list && \
     sed -i 's|security.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list
@@ -11,12 +11,13 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
       -o Acquire::https::Timeout="30" && \
     apt-get install -y --no-install-recommends \
       build-essential \
-      cmake \
+      cmake \   
       ninja-build \
       pkg-config \
       git \
       curl \
       wget \
+      zip \
       unzip \
       tar \
       libssl-dev \
@@ -26,21 +27,16 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* && \
 WORKDIR /vcpkg
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 RUN git clone --depth=1 https://github.com/Microsoft/vcpkg.git . && \
-    /bin/sh bootstrap-vcpkg.sh && \
-    git clean -fdx
+    chmod +x bootstrap-vcpkg.sh && \
+    ./bootstrap-vcpkg.sh
+
+RUN ls -la /vcpkg
+RUN test -f /vcpkg/vcpkg
+RUN /vcpkg/vcpkg version
 
 WORKDIR /app
 COPY vcpkg.json .
-RUN /vcpkg/vcpkg install \
-    --triplet x64-linux \
-    boost-asio \
-    boost-beast \
-    boost-system \
-    boost-filesystem \
-    boost-thread \
-    spdlog \
-    nlohmann-json \
-    fmt
+RUN /vcpkg/vcpkg install --triplet=x64-linux
 
 COPY CMakeLists.txt .
 COPY benchmarks/ benchmarks/
@@ -57,10 +53,14 @@ RUN mkdir -p build && cd build && \
         -DBUILD_TESTS=OFF \
         -DBUILD_BENCHMARKS=ON && \
     cmake --build . --target throughput_benchmark --parallel $(nproc) && \
-    test -x /app/build/benchmarks/throughput_benchmark && \
-    /app/build/benchmarks/throughput_benchmark --producers=1 --duration=1
+    find /app/build -type f | sort && \
+    BENCHMARK_EXECUTABLE="$(find /app/build -type f -name throughput_benchmark -perm -111 | head -n 1)" && \
+    test -n "$BENCHMARK_EXECUTABLE" && \
+    test -x "$BENCHMARK_EXECUTABLE" && \
+    cp "$BENCHMARK_EXECUTABLE" /app/throughput_benchmark && \
+    /app/throughput_benchmark --producers=1 --duration=1
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 RUN sed -i 's|archive.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list && \
     sed -i 's|security.ubuntu.com|mirrors.edge.kernel.org|g' /etc/apt/sources.list
@@ -82,8 +82,8 @@ RUN useradd -m -s /bin/bash mduser && \
     mkdir -p /app/data
 
 WORKDIR /app
-COPY --from=builder /app/build/benchmarks/throughput_benchmark ./throughput_benchmark
-COPY --from=builder /vcpkg/installed/x64-linux/lib/ /usr/local/lib/
+COPY --from=builder /app/throughput_benchmark ./throughput_benchmark
+COPY --from=builder /app/vcpkg_installed/x64-linux/lib/ /usr/local/lib/
 
 RUN chmod +x /app/throughput_benchmark && \
     ldconfig /usr/local/lib || true && \

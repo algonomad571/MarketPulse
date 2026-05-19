@@ -6,6 +6,9 @@
     "boost-filesystem",
     "boost-thread",
     "boost-asio",
-    "boost-beast"
+    "boost-beast",
+    "spdlog",
+    "fmt",
+    "nlohmann-json"
   ]
 }
