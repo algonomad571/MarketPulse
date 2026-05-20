@@ -1,360 +1,370 @@
-# MarketPulse — Low-Latency Market Data Ingestion & Replay System
+# MarketPulse
 
-A high-performance C++ market data processing system with real-time streaming, recording, replay capabilities, and a modern web-based monitoring dashboard.
+## Low-Latency Market Data Ingestion, Recording & Replay System
 
-## 🚀 Features
+MarketPulse is a high-performance market data processing platform built in Modern C++.
 
-### Core Functionality
-- **High-throughput ingestion**: 150k+ messages/sec (L1/L2/Trade data)
-- **Binary protocol**: Compact, CRC-validated frames for data integrity
-- **Custom TCP pub-sub**: Topic-based routing with backpressure handling
-- **Memory-mapped recording**: Efficient persistent storage with indexing
-- **Deterministic replay**: 1x to 100x speed with precise timing
-- **Real-time metrics**: Latency histograms, throughput, queue depths
+The project focuses on the infrastructure challenges commonly found in trading and market-data systems:
 
-### Architecture
-- **Multi-threaded pipeline**: Lock-free queues, work-stealing pools
-- **Per-symbol ordering**: Parallel processing while maintaining sequence
-- **Configurable rates**: Mock feed with burst simulation
-- **WebSocket metrics**: Real-time dashboard updates
-- **RESTful control**: Start/stop feeds, manage replay sessions
+- Asynchronous market data ingestion
+- Concurrent event processing
+- Backpressure-aware pipelines
+- Persistent recording
+- Historical replay
+- Real-time observability
+- Containerized deployment
 
-### Performance Targets
-- **Latency**: P50 < 2ms, P99 < 10ms (ingest→publish)
-- **Throughput**: ≥150k L1 msg/s, ≥60k L2 msg/s on 8-core system
-- **Replay**: Sustained 100x without backpressure violations
-
-## 🏗 Architecture Overview
-
-```
-┌─────────────┐    ┌──────────────┐    ┌──────────────┐
-│ Mock Feed   │───▶│ Normalizer   │───▶│ Publisher    │
-│ (Poisson)   │    │ (N threads)  │    │ (TCP server) │
-└─────────────┘    └──────────────┘    └──────────────┘
-                          │                     │
-                          ▼                     │
-                   ┌──────────────┐            │
-                   │ Recorder     │            │
-                   │ (mmap files) │            │
-                   └──────────────┘            │
-                          │                     │
-                          ▼                     │
-                   ┌──────────────┐            │
-                   │ Replayer     │────────────┘
-                   │ (rate ctrl)  │
-                   └──────────────┘
-```
-## Design Decisions & Trade-offs
-
-### Why Boost.Asio instead of raw epoll/kqueue?
-- Provides portable async I/O without sacrificing performance
-- Allows focus on pipeline and backpressure logic rather than OS-specific details
-- Still exposes low-level control over buffers and scheduling
-
-### Why lock-free queues (moodycamel) over mutex-based queues?
-- Avoids contention under high message rates
-- Predictable latency under bursty traffic
-- Reduced tail latency compared to std::queue + mutex
-
-### Why memory-mapped files for recording?
-- Sequential append with minimal syscall overhead
-- OS page cache handles buffering efficiently
-- Enables zero-copy reads during replay
-
-### Why custom binary protocol instead of Protobuf/FlatBuffers?
-- Fixed-size headers enable faster parsing
-- No schema negotiation overhead
-- Explicit control over alignment and endianness
-
-## 🛠 Technology Stack
-
-### Backend (C++)
-- **Language**: C++20 with CMake build system
-- **Networking**: Boost.Asio for async I/O
-- **Concurrency**: moodycamel::ConcurrentQueue (lock-free)
-- **Logging**: spdlog (async mode)
-- **Serialization**: Custom binary protocol
-- **Storage**: Memory-mapped files with indexing
-- **Metrics**: Custom histograms + Prometheus export
-
-### Frontend (Next.js)
-- **Framework**: Next.js 14 with TypeScript
-- **Styling**: Tailwind CSS with custom components
-- **Charts**: Recharts for real-time visualization
-- **WebSocket**: Live metrics streaming
-- **Icons**: Lucide React
-
-### Infrastructure
-- **Containerization**: Docker + Docker Compose
-- **Monitoring**: Prometheus + Grafana
-- **Optional Analytics**: ClickHouse integration
-- **Development**: Hot reload, health checks
-
-## 📁 Project Structure
-
-```
-md-system-cpp/
-├── src/                          # C++ source code
-│   ├── common/                   # Shared utilities
-│   │   ├── frame.{hpp,cpp}       # Binary protocol
-│   │   ├── symbol_registry.{hpp,cpp}
-│   │   ├── config.{hpp,cpp}
-│   │   └── metrics.{hpp,cpp}
-│   ├── feed/                     # Data connectors
-│   │   └── mock_feed.{hpp,cpp}
-│   ├── normalize/                # Event processing
-│   ├── publisher/                # TCP pub-sub server
-│   ├── recorder/                 # Persistent storage
-│   ├── replay/                   # Historical playback
-│   ├── ctrl/                     # REST/WebSocket API
-│   └── main_core.cpp             # Application entry
-├── ui/                           # Next.js dashboard
-│   ├── app/                      # App router pages
-│   │   ├── components/           # Reusable UI components
-│   │   ├── hooks/                # Custom React hooks
-│   │   └── (pages)/              # Route pages
-├── infra/                        # Infrastructure configs
-│   ├── prometheus/
-│   ├── grafana/
-│   └── clickhouse/
-├── CMakeLists.txt                # Build configuration
-├── docker-compose.yml            # Full stack deployment
-└── config.json                   # Runtime configuration
-```
-
-## 📊 Binary Protocol
-
-### Frame Header (Little-Endian)
-```cpp
-struct FrameHeader {
-  uint32_t magic;     // 0x4D444146 ('MDAF')
-  uint16_t version;   // 1
-  uint16_t msg_type;  // 1=L1, 2=L2, 3=Trade, 4=Heartbeat
-  uint32_t body_len;  // bytes of body
-  uint32_t crc32;     // CRC32 of body
-};
-```
-
-### Message Bodies
-```cpp
-struct L1Body {
-  uint64_t ts_ns;
-  uint32_t symbol_id;
-  int64_t  bid_px, ask_px;     // scaled 1e-8
-  uint64_t bid_sz, ask_sz;     // scaled 1e-8
-  uint64_t seq;
-};
-
-struct L2Body {
-  uint64_t ts_ns;
-  uint32_t symbol_id;
-  uint8_t  side;        // 0=Bid, 1=Ask
-  uint8_t  action;      // 0=Insert, 1=Update, 2=Delete
-  uint16_t level;       // 0=best
-  int64_t  price;       // scaled 1e-8
-  uint64_t size;        // scaled 1e-8
-  uint64_t seq;
-};
-```
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Docker and Docker Compose
-- C++20 compatible compiler (for local builds)
-- Node.js 18+ (for UI development)
-
-### Running the Complete System
-
-1. **Clone and start all services**:
-   ```bash
-   git clone <repository>
-   cd md-system-cpp
-   docker-compose up -d
-   ```
-
-2. **Access the interfaces**:
-   - **Main Dashboard**: http://localhost:3000
-   - **Grafana**: http://localhost:3001 (admin/admin)
-   - **Prometheus**: http://localhost:9090
-   - **Control API**: http://localhost:8080
-
-3. **Start the mock feed**:
-   ```bash
-   curl -X POST http://localhost:8080/feeds/start \
-     -H "Content-Type: application/json" \
-     -d '{"action":"start","l1_rate":50000,"l2_rate":30000,"trade_rate":5000}'
-   ```
-
-### Local Development
-
-1. **Build C++ core**:
-   ```bash
-   mkdir build && cd build
-   cmake .. -DCMAKE_BUILD_TYPE=Debug
-   make -j$(nproc)
-   ./md_core_main ../config.json
-   ```
-
-2. **Run UI in development mode**:
-   ```bash
-   cd ui
-   npm install
-   npm run dev
-   ```
-
-## 🎮 Usage Examples
-
-### Subscribe to Live Data
-```bash
-# Connect to TCP pub-sub (port 9100)
-telnet localhost 9100
-
-# Send subscription (JSON control messages)
-{"op":"auth","token":"devtoken123"}
-{"op":"subscribe","topics":["l1.BTCUSDT","trade.*"],"lossless":false}
-
-# Receive binary frames...
-```
-
-### Start Replay Session
-```bash
-curl -X POST http://localhost:8080/replay/start \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action":"start",
-    "from_ts_ns":1640995200000000000,
-    "to_ts_ns":1640998800000000000,
-    "rate":10.0,
-    "topics":["l1.*"]
-  }'
-```
-
-### Monitor via WebSocket
-```javascript
-const ws = new WebSocket('ws://localhost:8081/ws/metrics');
-ws.onmessage = (event) => {
-  const metrics = JSON.parse(event.data);
-  console.log('P99 latency:', metrics.histograms.normalize_event_ns.p99, 'ns');
-};
-```
-
-## 📈 Performance Monitoring
-
-### Key Metrics
-- **Throughput**: Messages processed per second by type
-- **Latency**: P50/P95/P99 processing latencies
-- **Queue Depths**: Publisher and recorder backlogs
-- **Connections**: Active TCP subscribers
-- **Errors**: Processing failures and drops
-
-### Grafana Dashboards
-Pre-configured dashboards include:
-- System Overview (throughput, latency, connections)
-- Pipeline Health (queue depths, error rates)
-- Performance Analysis (latency percentiles, burst handling)
-
-## 🔧 Configuration
-
-### Runtime Configuration (`config.json`)
-```json
-{
-  "network": {
-    "pubsub_port": 9100,
-    "ctrl_http_port": 8080,
-    "ws_metrics_port": 8081
-  },
-  "storage": {
-    "dir": "./data",
-    "roll_bytes": 2147483648,
-    "index_interval": 10000
-  },
-  "pipeline": {
-    "publisher_lanes": 8,
-    "normalizer_threads": 4,
-    "recorder_fsync_ms": 50
-  },
-  "feeds": {
-    "default_symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-    "mock_enabled": true
-  }
-}
-```
-## Failure Handling & Guarantees
-
-### Backpressure
-- Publisher applies bounded queues per topic
-- When queues are full, producers slow down instead of dropping data
-
-### Crash Recovery
-- Memory-mapped files are flushed at configurable intervals
-- On restart, recorder replays last valid index
-- Partial frames are detected via CRC and discarded
-
-### Data Integrity
-- CRC32 validation on every frame
-- Corrupted frames are logged and skipped
-
-### Known Limitations
-- Single-node deployment (no replication)
-- TCP-based pub-sub assumes reliable connections
-- No exactly-once delivery across process restarts
-
-## 🧪 Testing & Benchmarking
-
-### Unit Tests
-```bash
-cd build
-make test
-./tests/unit_tests
-```
-
-### Performance Benchmarks
-```bash
-./benchmarks/pipeline_bench
-# Expected: >150k msg/s throughput, <10ms P99 latency
-```
-
-### Chaos Testing
-```bash
-# Test file integrity after crashes
-./scripts/chaos_test.sh
-```
-
-### Benchmarking Methodology
-
-- Benchmarks executed on an 8-core x86_64 machine
-- CPU pinning enabled to reduce scheduler noise
-- Latencies measured from ingest → publish using monotonic clocks
-- P99 computed over 60-second steady-state windows
-- Burst tests simulate Poisson arrivals with configurable rates
-
-## 📚 Documentation
-
-- **[Protocol Specification](docs/PROTOCOL.md)**: Binary frame format details
-- **[File Format](docs/FILEFORMAT.md)**: .mdf/.idx storage layout
-- **[API Reference](docs/API.md)**: REST endpoints and WebSocket
-- **[Runbook](docs/RUNBOOK.md)**: Operations and troubleshooting
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make changes with tests
-4. Ensure benchmarks pass
-5. Submit a pull request
-
-### Development Standards
-- C++20 modern idioms
-- Lock-free where possible
-- Comprehensive error handling
-- Performance-first design
-- Clean architecture principles
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Rather than building trading strategies, MarketPulse focuses on the underlying data infrastructure that powers them.
 
 ---
 
-**Built for ultra-low latency market data processing with production-grade reliability.**
+## Key Features
+
+### High-Performance Ingestion
+
+- Boost.Asio based asynchronous networking
+- Concurrent processing pipeline
+- Per-symbol ordering guarantees
+- Backpressure-aware event flow
+- Configurable market data generation
+
+### Recording & Replay
+
+- Memory-mapped file storage
+- Indexed replay infrastructure
+- CRC-protected binary framing
+- Deterministic playback
+- Replay speeds from 1× to 100×
+
+### Observability
+
+- Prometheus metrics export
+- Grafana dashboards
+- Queue depth monitoring
+- Throughput tracking
+- Latency instrumentation
+- Backpressure visibility
+
+### Deployment
+
+- Dockerized services
+- Docker Compose orchestration
+- Health checks
+- Service discovery
+- Reproducible environments
+
+---
+
+# Architecture
+
+*High-level architecture showing ingestion, processing, publishing, recording, replay, and monitoring components.*
+
+### Pipeline Overview
+
+```text
+Mock Feed / Exchange Feed
+            │
+            ▼
+     Boost.Asio Event Loop
+            │
+            ▼
+      Ingestion Queue
+            │
+            ▼
+      Normalizer Workers
+            │
+    ┌───────┴────────┐
+    ▼                ▼
+Publisher        Recorder
+    │                │
+    ▼                ▼
+WebSocket      MDF / IDX Files
+Clients             │
+                    ▼
+               Replay Engine
+```
+
+---
+
+# Design Decisions
+
+## Why Boost.Asio?
+
+I evaluated:
+
+- Blocking sockets + thread pools
+- epoll
+- io_uring
+
+Boost.Asio provided:
+
+- Asynchronous I/O
+- Cross-platform support
+- Mature ecosystem
+- Low development overhead
+
+while still allowing fine-grained control over networking behavior.
+
+---
+
+## Why Concurrent Queues?
+
+MarketPulse uses:
+
+```cpp
+moodycamel::ConcurrentQueue
+```
+
+between pipeline stages.
+
+Compared to a mutex-protected queue:
+
+```cpp
+std::queue
+std::mutex
+```
+
+this reduces:
+
+- lock contention
+- context switching
+- cache-line bouncing
+
+under multi-threaded workloads.
+
+---
+
+## Why Backpressure?
+
+The initial implementation relied on dropping events when queues became full.
+
+The current design implements bounded queues and producer throttling.
+
+Benefits:
+
+- Controlled memory usage
+- Improved stability during bursts
+- Reduced risk of unbounded queue growth
+
+---
+
+## Why Memory-Mapped Files?
+
+MarketPulse uses memory-mapped files for recording market data.
+
+Advantages:
+
+- Reduced syscall overhead
+- Efficient sequential writes
+- Fast indexed replay
+- OS-managed page caching
+
+Tradeoffs:
+
+- Durability depends on flush policy
+- Requires careful crash recovery handling
+
+
+### Recording Format
+
+Each frame contains:
+
+```cpp
+struct FrameHeader {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t msg_type;
+    uint32_t body_len;
+    uint32_t crc32;
+};
+```
+
+Benefits:
+
+- Corruption detection
+- Partial-frame recovery
+- Replay safety
+
+---
+
+# Benchmark Results
+
+The project includes a dedicated benchmark harness for measuring pipeline performance.
+
+### Benchmark Environment
+
+- Modern C++20
+- Boost.Asio
+- Dockerized runtime
+- Multi-threaded pipeline
+
+### Results
+
+| Run | Messages Processed | Throughput |
+|------|-------------------|------------|
+| 1 | 508,047 | 42,680 msg/s |
+| 2 | 442,191 | 37,666 msg/s |
+| 3 | 530,296 | 43,419 msg/s |
+
+Average observed throughput:
+
+**~40k+ messages/sec**
+
+No dropped frames were observed during benchmark runs.
+
+---
+
+# Observability
+
+MarketPulse exports metrics through Prometheus and visualizes them with Grafana.
+
+Tracked metrics include:
+
+- Ingestion rate
+- Publish rate
+- Replay rate
+- Queue depth
+- Producer pauses
+- Backpressure state
+- P50 latency
+- P99 latency
+- Dropped frames
+
+# Technology Stack
+
+## Backend
+
+- C++20
+- Boost.Asio
+- moodycamel::ConcurrentQueue
+- spdlog
+- CMake
+
+## Frontend
+
+- Next.js
+- TypeScript
+- Tailwind CSS
+- Recharts
+
+## Infrastructure
+
+- Docker
+- Docker Compose
+- Prometheus
+- Grafana
+
+---
+
+# Project Structure
+
+```text
+MarketPulse/
+├── src/
+│   ├── common/
+│   ├── feed/
+│   ├── normalize/
+│   ├── publisher/
+│   ├── recorder/
+│   ├── replay/
+│   ├── ctrl/
+│   └── main_core.cpp
+│
+├── benchmarks/
+│
+├── ui/
+│
+├── infra/
+│   ├── prometheus/
+│   └── grafana/
+│
+├── docs/
+│
+├── docker-compose.yml
+├── CMakeLists.txt
+└── config.json
+```
+
+---
+
+# Quick Start
+
+## Using Docker
+
+```bash
+git clone <repository-url>
+cd MarketPulse
+
+docker compose up -d
+```
+
+Services:
+
+| Service | URL |
+|----------|-----|
+| Dashboard | http://localhost:3000 |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3001 |
+| Control API | http://localhost:8080 |
+
+---
+
+# Running Locally
+
+## Build
+
+```bash
+mkdir build
+cd build
+
+cmake ..
+cmake --build . --config Release
+```
+
+## Run
+
+```bash
+./md_core_main ../config.json
+```
+
+---
+
+# Engineering Lessons
+
+Building MarketPulse taught me several important lessons:
+
+### Backpressure Matters More Than Peak Throughput
+
+A stable system under bursty traffic is often more valuable than a system that only achieves impressive benchmark numbers.
+
+### Observability Is Essential
+
+Metrics repeatedly revealed bottlenecks that were invisible during development.
+
+### Concurrency Is About Coordination
+
+Getting threads to run concurrently is easy.
+
+Getting them to coordinate correctly while preserving ordering and stability is much harder.
+
+### Storage Design Affects Performance
+
+Persistence mechanisms directly influence throughput, latency, and recovery behavior.
+
+---
+
+# Future Work
+
+Planned improvements include:
+
+- Binance market data connector
+- Coinbase market data connector
+- io_uring experimentation
+- Zero-copy parsing
+- Stronger durability guarantees
+- Advanced latency instrumentation
+- Distributed replay infrastructure
+
+
+
+Built to explore the challenges of asynchronous networking, concurrent processing, storage systems, replay infrastructure, and observability in modern C++ systems engineering.
