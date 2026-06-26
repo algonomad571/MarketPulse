@@ -1,9 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(md_system_cpp VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+
 
 # Build options
 option(WITH_BINANCE "Build with Binance WebSocket connector" OFF)
@@ -49,6 +47,7 @@ add_library(md_core
 )
 
 target_include_directories(md_core PUBLIC src)
+target_compile_features(md_core PUBLIC cxx_std_20)
 target_link_libraries(md_core 
     PUBLIC 
         Boost::system 
