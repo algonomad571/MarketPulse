@@ -310,7 +310,7 @@ private:
 
     std::string generate_topic(const Frame& frame) {
         uint32_t symbol_id = 0;
-        std::string msg_type;
+        const char* msg_type = "other";
 
         std::visit([&symbol_id, &msg_type](const auto& body) {
             using T = std::decay_t<decltype(body)>;
@@ -324,18 +324,20 @@ private:
             } else if constexpr (std::is_same_v<T, TradeBody>) {
                 symbol_id = body.symbol_id;
                 msg_type = "trade";
-            } else {
-                symbol_id = 0;
-                msg_type = "other";
             }
         }, frame.body);
 
-        std::string symbol = std::string(symbol_registry_->by_id(symbol_id));
+        std::string_view symbol = symbol_registry_->by_id(symbol_id);
         if (symbol.empty()) {
             symbol = "UNKNOWN";
         }
 
-        return msg_type + "." + symbol;
+        std::string topic;
+        topic.reserve(std::char_traits<char>::length(msg_type) + 1 + symbol.length());
+        topic.append(msg_type);
+        topic.push_back('.');
+        topic.append(symbol);
+        return topic;
     }
 
     Config config_;
