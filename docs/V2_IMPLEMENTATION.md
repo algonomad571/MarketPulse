@@ -480,3 +480,17 @@ At completion, the engine should provide:
 * Extensible architecture
 
 MarketPulse v2 serves as the computational foundation for every future component of the MarketPulse platform.
+
+
+| Milestone | Deliverable             | Git Tag                |
+| --------- | ----------------------- | ---------------------- |
+| M1        | Runtime Foundation      | `v2-m1-runtime`        |
+| M2        | State Management        | `v2-m2-state`          |
+| M3        | Feature Runtime         | `v2-m3-runtime`        |
+| M4        | Price Features          | `v2-m4-price`          |
+| M5        | Microstructure Features | `v2-m5-microstructure` |
+| M6        | Statistical Features    | `v2-m6-statistics`     |
+| M7        | Storage                 | `v2-m7-storage`        |
+| M8        | Validation              | `v2-m8-validation`     |
+| M9        | Observability           | `v2-m9-observability`  |
+| M10       | Optimization            | `v2.0.0`               |

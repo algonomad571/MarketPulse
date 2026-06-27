@@ -65,6 +65,25 @@ target_link_libraries(md_core
 add_executable(md_core_main src/main_core.cpp)
 target_link_libraries(md_core_main md_core)
 
+# MPIE (MarketPulse Intelligence Engine) Core Library
+add_library(md_mpie
+    src/mpie/registry/feature_registry.cpp
+    src/mpie/engine/worker.cpp
+    src/mpie/engine/feature_engine.cpp
+)
+target_include_directories(md_mpie PUBLIC src)
+target_compile_features(md_mpie PUBLIC cxx_std_20)
+target_link_libraries(md_mpie
+    PUBLIC
+        Threads::Threads
+        moodycamel
+)
+
+# MPIE Main executable
+add_executable(mpie_main src/mpie_main.cpp)
+target_link_libraries(mpie_main md_mpie)
+
+
 # Optional Binance connector
 if(WITH_BINANCE)
     target_sources(md_core PRIVATE src/feed/binance_ws.cpp)
