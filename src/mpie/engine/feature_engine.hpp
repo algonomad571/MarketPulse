@@ -12,18 +12,25 @@ public:
     explicit FeatureEngine(uint32_t num_workers);
     ~FeatureEngine();
 
+    FeatureEngine(const FeatureEngine&) = delete;
+    FeatureEngine& operator=(const FeatureEngine&) = delete;
+
     void initialize();
-    void start();
-    void stop();
+    void start() noexcept;
+    void stop() noexcept;
 
-    // Inject events for testing/M1 demo
-    void route_event(const MarketEvent& event);
+    void route_event(const MarketEvent& event) noexcept;
+    bool try_route_event(const MarketEvent& event) noexcept;
 
-    FeatureRegistry& get_registry() { return registry_; }
+    [[nodiscard]] FeatureRegistry& get_registry() noexcept { return registry_; }
+    [[nodiscard]] const std::vector<std::unique_ptr<Worker>>& get_workers() const noexcept { return workers_; }
+    [[nodiscard]] uint64_t get_total_processed() const noexcept;
 
     void print_stats() const;
 
 private:
+    void startup_self_test() const;
+
     uint32_t num_workers_;
     FeatureRegistry registry_;
     std::vector<std::unique_ptr<Worker>> workers_;

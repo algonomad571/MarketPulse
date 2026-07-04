@@ -10,7 +10,7 @@ enum class EventType : uint8_t {
     Trade = 3
 };
 
-struct MarketEvent
+struct alignas(64) MarketEvent
 {
     uint64_t timestamp;
     uint32_t symbol_id;

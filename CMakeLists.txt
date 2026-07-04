@@ -70,6 +70,8 @@ add_library(md_mpie
     src/mpie/registry/feature_registry.cpp
     src/mpie/engine/worker.cpp
     src/mpie/engine/feature_engine.cpp
+    src/mpie/engine/context_builder.cpp
+    src/mpie/state/state_manager.cpp
 )
 target_include_directories(md_mpie PUBLIC src)
 target_compile_features(md_mpie PUBLIC cxx_std_20)
