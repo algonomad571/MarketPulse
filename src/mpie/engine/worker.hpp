@@ -77,6 +77,7 @@ private:
     std::shared_ptr<moodycamel::ConcurrentQueue<MarketEvent>> queue_;
     std::unique_ptr<std::jthread> thread_;
     std::atomic<bool> running_{false};
+    uint64_t spin_count_{0};
     
     WorkerDiagnostics diagnostics_;
     

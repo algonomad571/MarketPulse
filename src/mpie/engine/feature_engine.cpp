@@ -74,19 +74,19 @@ void FeatureEngine::stop() noexcept {
 }
 
 void FeatureEngine::route_event(const MarketEvent& event) noexcept {
-    if (workers_.empty()) return;
+    if (workers_.empty()) [[unlikely]] return;
     uint32_t worker_idx = event.symbol_id % workers_.size();
     auto& worker = workers_[worker_idx];
     worker->get_queue()->enqueue(event);
 }
 
 bool FeatureEngine::try_route_event(const MarketEvent& event) noexcept {
-    if (workers_.empty()) return false;
+    if (workers_.empty()) [[unlikely]] return false;
     
     uint32_t worker_idx = event.symbol_id % workers_.size();
     auto& worker = workers_[worker_idx];
     
-    if (worker->get_queue()->try_enqueue(event)) {
+    if (worker->get_queue()->try_enqueue(event)) [[likely]] {
         return true;
     } else {
         worker->get_diagnostics().push_failures.fetch_add(1, std::memory_order_relaxed);

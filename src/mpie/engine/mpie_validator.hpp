@@ -6,6 +6,8 @@
 #include <iostream>
 #include <chrono>
 #include <type_traits>
+#include "worker.hpp"
+#include "../observability/telemetry_exporter.hpp"
 #include <iomanip>
 #include <fstream>
 #include <cmath>
@@ -284,23 +286,8 @@ inline void run_preflight_checks(FeatureEngine& engine) {
     // 10. PERFORMANCE REGRESSION BASELINE FILE
     // ---------------------------------------------------------
     std::cout << ANSI_CYAN << "[Validator] " << ANSI_RESET << "Serializing baseline telemetry to JSON...\n";
-    std::ofstream json_file("runtime_benchmark.json");
-    if (json_file.is_open()) {
-        json_file << "{\n"
-                  << "  \"metadata\": {\n"
-                  << "    \"os\": \"" << os_name << "\",\n"
-                  << "    \"compiler\": \"" << comp_name << "\",\n"
-                  << "    \"build\": \"" << build_type << "\"\n"
-                  << "  },\n"
-                  << "  \"performance\": {\n"
-                  << "    \"global_throughput\": " << throughput << ",\n"
-                  << "    \"elapsed_ms\": " << elapsed_ms << ",\n"
-                  << "    \"load_imbalance_pct\": " << imbalance_pct << "\n"
-                  << "  }\n"
-                  << "}\n";
-        json_file.close();
-        std::cout << "          > " << ANSI_GREEN << "[PASS]" << ANSI_RESET << " Wrote runtime_benchmark.json.\n\n";
-    }
+    TelemetryExporter::export_json(engine.get_workers(), elapsed_ms, os_name, comp_name, build_type, "runtime_benchmark.json");
+    std::cout << "          > " << ANSI_GREEN << "[PASS]" << ANSI_RESET << " Wrote runtime_benchmark.json.\n\n";
 
     std::cout << "==================================================\n";
     std::cout << "MPIE Runtime Summary\n\n";

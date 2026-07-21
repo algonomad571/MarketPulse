@@ -1,0 +1,77 @@
+{
+    "metadata": {
+        "build": "Release",
+        "compiler": "MSVC 1944",
+        "engine_version": "2.0.0",
+        "os": "Windows",
+        "schema_version": 1
+    },
+    "performance": {
+        "elapsed_ms": 4030,
+        "global_throughput": 2609400.992555831,
+        "load_imbalance_pct": 0.26165516751550166,
+        "load_imbalance_std_dev": 6878.839782259796
+    },
+    "workers": [
+        {
+            "core": 0,
+            "latency_ns": {
+                "max": 13538100,
+                "min": 700,
+                "p50": 9950,
+                "p95": 9950,
+                "p99": 9950
+            },
+            "processed": 2625000,
+            "queue_avg": 420,
+            "queue_peak": 1024,
+            "utilization_pct": 87.62006172546137,
+            "worker_id": 0
+        },
+        {
+            "core": 1,
+            "latency_ns": {
+                "max": 13984800,
+                "min": 500,
+                "p50": 3250,
+                "p95": 9950,
+                "p99": 9950
+            },
+            "processed": 2625000,
+            "queue_avg": 49,
+            "queue_peak": 1024,
+            "utilization_pct": 77.64447133321977,
+            "worker_id": 1
+        },
+        {
+            "core": 2,
+            "latency_ns": {
+                "max": 17450100,
+                "min": 400,
+                "p50": 1550,
+                "p95": 9950,
+                "p99": 9950
+            },
+            "processed": 2625000,
+            "queue_avg": 33,
+            "queue_peak": 1024,
+            "utilization_pct": 74.1550601109353,
+            "worker_id": 2
+        },
+        {
+            "core": 3,
+            "latency_ns": {
+                "max": 25890600,
+                "min": 400,
+                "p50": 8650,
+                "p95": 9950,
+                "p99": 9950
+            },
+            "processed": 2640886,
+            "queue_avg": 131,
+            "queue_peak": 1024,
+            "utilization_pct": 84.32211667512732,
+            "worker_id": 3
+        }
+    ]
+}

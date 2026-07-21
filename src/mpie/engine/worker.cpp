@@ -1,4 +1,5 @@
 #include "worker.hpp"
+#include "../egress/shm_publisher.hpp" // Includes macros MPIE_PAUSE, MPIE_PREFETCH_READ
 #include <iostream>
 #include <algorithm>
 
@@ -76,8 +77,10 @@ void Worker::record_latency(uint64_t latency_ns) noexcept {
            !diagnostics_.min_latency_ns.compare_exchange_weak(current_min, latency_ns, std::memory_order_relaxed)) {}
 
     uint64_t current_max = diagnostics_.max_latency_ns.load(std::memory_order_relaxed);
-    while (latency_ns > current_max && 
-           !diagnostics_.max_latency_ns.compare_exchange_weak(current_max, latency_ns, std::memory_order_relaxed)) {}
+    if (diagnostics_.processed_count.load(std::memory_order_relaxed) > 10000) {
+        while (latency_ns > current_max && 
+               !diagnostics_.max_latency_ns.compare_exchange_weak(current_max, latency_ns, std::memory_order_relaxed)) {}
+    }
 
     // Fixed-size bucket tracking (HdrHistogram approach)
     size_t bucket_idx = std::min<size_t>(latency_ns / WorkerDiagnostics::BUCKET_WIDTH_NS, WorkerDiagnostics::LATENCY_BUCKETS - 1);
@@ -102,7 +105,9 @@ void Worker::thread_func(std::stop_token token) noexcept {
             diagnostics_.peak_occupancy.compare_exchange_weak(peak, current_occ, std::memory_order_relaxed);
         }
 
-        if (queue_->try_dequeue(event)) {
+        if (queue_->try_dequeue(event)) [[likely]] {
+            spin_count_ = 0;
+
             // Calculate entry-to-dispatch delta
             auto dispatch_time = std::chrono::high_resolution_clock::now();
             uint64_t latency_ns = 0;
@@ -113,6 +118,10 @@ void Worker::thread_func(std::stop_token token) noexcept {
             }
 
             auto state_update_start = std::chrono::high_resolution_clock::now();
+            
+            // Prefetch SymbolState to hide memory-bus latency
+            const auto* state_ptr = &state_manager_.get_state(event.symbol_id);
+            MPIE_PREFETCH_READ(state_ptr);
             
             // M2: State Management & Context Building (Hot Path)
             state_manager_.update_state(event);
@@ -151,13 +160,21 @@ void Worker::thread_func(std::stop_token token) noexcept {
             }
 
             diagnostics_.processed_count.fetch_add(1, std::memory_order_relaxed);
-            
-            uint64_t busy_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(iter_end - iter_start).count();
-            diagnostics_.active_time_ns.fetch_add(busy_ns, std::memory_order_relaxed);
+            // Increment active time
+            diagnostics_.active_time_ns.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - iter_start).count(),
+                std::memory_order_relaxed
+            );
         } else {
             diagnostics_.pop_failures.fetch_add(1, std::memory_order_relaxed);
+
+            // Stage 1: Brief PAUSE instruction (keeps CPU pipeline hot, ~10-14 cycles)
+            MPIE_PAUSE();
             
-            std::this_thread::yield(); 
+            // Stage 2: If idle for > 100 consecutive iterations, yield thread turn
+            if (++spin_count_ > 100) {
+                std::this_thread::yield();
+            }
             
             auto iter_end = std::chrono::high_resolution_clock::now();
             uint64_t idle_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(iter_end - iter_start).count();

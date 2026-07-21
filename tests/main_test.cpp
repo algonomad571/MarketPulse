@@ -13,6 +13,7 @@ extern void run_edge_case_tests();
 extern void run_pipeline_integration_tests();
 extern void run_feature_store_tests();
 extern void run_shm_egress_tests();
+extern void run_observability_tests();
 
 void print_coverage_report() {
     std::cout << "\n======================================\n";
@@ -54,6 +55,7 @@ int main() {
     run_pipeline_integration_tests();
     run_feature_store_tests();
     run_shm_egress_tests();
+    run_observability_tests();
 
     std::cout << "\n======================================================\n";
     std::cout << "Test Summary\n";

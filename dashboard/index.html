@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MarketPulse Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="dashboard-container">
+        <header>
+            <div class="logo">
+                <span class="accent-green">|</span> MARKETPULSE <span style="font-weight: 300;">TELEMETRY</span>
+            </div>
+            <div class="status-bar">
+                <span class="status-indicator"></span> LIVE
+                <button class="submit-btn" id="refresh-btn">Refresh Metrics</button>
+            </div>
+        </header>
+
+        <div class="main-grid">
+            <!-- Left Column: Live Metrics -->
+            <div class="panel metrics-panel">
+                <h2 class="panel-title">GLOBAL METRICS</h2>
+                <div class="metric-row">
+                    <span class="metric-label">Throughput</span>
+                    <span class="metric-value" id="global-throughput">--</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Elapsed Time</span>
+                    <span class="metric-value" id="elapsed-time">--</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Load Imbalance</span>
+                    <span class="metric-value" id="load-imbalance">--</span>
+                </div>
+                
+                <h2 class="panel-title" style="margin-top: 2rem;">LATENCY PROFILE</h2>
+                <div class="metric-row">
+                    <span class="metric-label">P50 Latency</span>
+                    <span class="metric-value" id="p50-latency">--</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">P95 Latency</span>
+                    <span class="metric-value" id="p95-latency">--</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">P99 Latency</span>
+                    <span class="metric-value accent-orange" id="p99-latency">--</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Max Latency</span>
+                    <span class="metric-value accent-orange" id="max-latency">--</span>
+                </div>
+            </div>
+
+            <!-- Middle Column: Charts -->
+            <div class="panel charts-panel">
+                <h2 class="panel-title">CHARTS</h2>
+                <div class="chart-container">
+                    <div class="chart-header">
+                        <span class="chart-title">Worker Throughput Distribution</span>
+                    </div>
+                    <canvas id="throughputChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-header">
+                        <span class="chart-title">Worker P99 Latency (µs)</span>
+                    </div>
+                    <canvas id="latencyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Right Column: Workers -->
+            <div class="panel workers-panel">
+                <h2 class="panel-title">WORKER NODES</h2>
+                <div class="workers-grid" id="workers-grid">
+                    <!-- Worker cards will be injected here -->
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
