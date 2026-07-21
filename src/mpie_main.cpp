@@ -1,11 +1,14 @@
 #include "mpie/engine/feature_engine.hpp"
 #include "mpie/engine/mpie_validator.hpp"
+#include "mpie/storage/schema_metadata.hpp"
 #include <iostream>
 
 using namespace md::mpie;
 
 int main() {
     std::cout << "Starting MarketPulse Intelligence Engine (MPIE) Pre-Flight Validator\n";
+
+    SchemaMetadataGenerator::generate();
 
     // Create feature engine with 4 workers
     FeatureEngine engine(4);

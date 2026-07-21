@@ -7,8 +7,10 @@ add_executable(mpie_math_tests
     math/test_book_features.cpp
     math/test_flow_features.cpp
     math/test_microstructure_features.cpp
+    math/test_statistical_features.cpp
     math/test_edge_cases.cpp
     math/test_pipeline_integration.cpp
+    storage/test_feature_store.cpp
 )
 
 target_include_directories(mpie_math_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

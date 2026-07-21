@@ -32,6 +32,10 @@ struct alignas(64) TradeState {
     FixedRingBuffer<uint64_t, 64> volume_history;
 };
 
+struct alignas(64) FlowState {
+    FixedRingBuffer<double, 64> ofi_history;
+};
+
 struct alignas(64) FeatureScratchpad {
     double temp_values[8]{0.0};
 };
@@ -40,11 +44,12 @@ struct alignas(64) SymbolState {
     PriceState price;
     BookState book;
     TradeState trade;
+    FlowState flow;
     FeatureScratchpad scratch;
     
     MarketEvent last_event{};
     bool is_initialized{false};
-    uint8_t _pad[55]{0}; // explicit pad 1 bool + 55 bytes = 56 + 8 (last_event pad?) wait, alignas handles it.
+    uint8_t _pad[55]{0}; // explicit pad
 };
 
 // Contract checks

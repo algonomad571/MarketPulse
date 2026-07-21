@@ -3,6 +3,7 @@
 #include "../executors/book_features.hpp"
 #include "../executors/flow_features.hpp"
 #include "../executors/microstructure_features.hpp"
+#include "../executors/statistical_features.hpp"
 #include <tuple>
 
 namespace md::mpie {
@@ -11,6 +12,7 @@ class FeaturePipeline {
     std::tuple<SpreadExecutor, MidPriceExecutor, MicroPriceExecutor, LogReturnExecutor, WAPExecutor> pass1_executors_;
     std::tuple<BookImbalanceExecutor, MultiLevelImbalanceL5Executor, BookPressureRatioExecutor, TradeFlowImbalanceExecutor> pass2_executors_;
     std::tuple<OrderFlowImbalanceExecutor> pass3_executors_;
+    std::tuple<VWAP32Executor, RealizedVolatility32Executor, OFIZScore32Executor> pass4_executors_;
 
 public:
     FeaturePipeline() = default;
@@ -24,6 +26,9 @@ public:
 
         // Pass 3: Flow Metrics (Can safely access Pass 1 and 2 records inside fv)
         std::apply([ctx, &fv](auto&&... exec) { (exec.compute(ctx, fv), ...); }, pass3_executors_);
+
+        // Pass 4: Statistical Metrics
+        std::apply([ctx, &fv](auto&&... exec) { (exec.compute(ctx, fv), ...); }, pass4_executors_);
     }
 };
 

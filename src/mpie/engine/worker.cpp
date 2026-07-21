@@ -20,8 +20,11 @@ constexpr std::string_view ANSI_CYAN   = "\033[36m";
 Worker::Worker(uint32_t worker_id, uint32_t universe_size)
     : worker_id_(worker_id),
       queue_(std::make_shared<moodycamel::ConcurrentQueue<MarketEvent>>(1024 * 1024)),
-      state_manager_(universe_size)
-{}
+      state_manager_(universe_size),
+      store_worker_("worker_" + std::to_string(worker_id) + "_features.bin")
+{
+    publisher_.set_store(&store_worker_);
+}
 
 Worker::~Worker() {
     stop();
@@ -31,6 +34,7 @@ void Worker::start() noexcept {
     if (running_.exchange(true, std::memory_order_acquire)) {
         return;
     }
+    store_worker_.start();
     thread_ = std::make_unique<std::jthread>([this](std::stop_token token) {
         thread_func(std::move(token));
     });
@@ -43,6 +47,7 @@ void Worker::stop() noexcept {
             thread_->join();
             thread_.reset();
         }
+        store_worker_.stop();
     }
 }
 

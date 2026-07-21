@@ -30,6 +30,22 @@ void StateManager::update_state(const MarketEvent& event) noexcept {
             state.book.implied_mid = (event.bid_price + event.ask_price) / 2.0;
             state.book.mid_history.push(state.book.implied_mid);
         }
+        
+        if (state.is_initialized) {
+            double delta_v_b = 0.0;
+            if (event.bid_price > state.last_event.bid_price) delta_v_b = static_cast<double>(event.bid_size);
+            else if (event.bid_price == state.last_event.bid_price) delta_v_b = static_cast<double>(event.bid_size) - static_cast<double>(state.last_event.bid_size);
+            else delta_v_b = -static_cast<double>(state.last_event.bid_size);
+
+            double delta_v_a = 0.0;
+            if (event.ask_price < state.last_event.ask_price) delta_v_a = static_cast<double>(event.ask_size);
+            else if (event.ask_price == state.last_event.ask_price) delta_v_a = static_cast<double>(event.ask_size) - static_cast<double>(state.last_event.ask_size);
+            else delta_v_a = -static_cast<double>(state.last_event.ask_size);
+
+            state.flow.ofi_history.push(delta_v_b - delta_v_a);
+        } else {
+            state.flow.ofi_history.push(0.0);
+        }
     }
     
     state.last_event = event;

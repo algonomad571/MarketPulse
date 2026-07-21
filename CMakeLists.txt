@@ -16,7 +16,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
 endif()
 
 # Find packages
-find_package(Boost CONFIG REQUIRED COMPONENTS system filesystem thread)
+find_package(Boost CONFIG REQUIRED COMPONENTS system filesystem thread lockfree)
 find_package(boost_asio CONFIG REQUIRED)
 find_package(boost_beast CONFIG REQUIRED)
 find_package(Threads REQUIRED)
@@ -79,6 +79,7 @@ target_link_libraries(md_mpie
     PUBLIC
         Threads::Threads
         moodycamel
+        Boost::lockfree
 )
 
 # MPIE Main executable

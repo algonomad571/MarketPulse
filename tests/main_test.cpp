@@ -7,9 +7,11 @@ using namespace md::mpie::tests;
 extern void run_price_feature_tests();
 extern void run_book_feature_tests();
 extern void run_microstructure_feature_tests();
+extern void run_statistical_feature_tests();
 extern void run_flow_feature_tests();
 extern void run_edge_case_tests();
 extern void run_pipeline_integration_tests();
+extern void run_feature_store_tests();
 
 void print_coverage_report() {
     std::cout << "\n======================================\n";
@@ -45,9 +47,11 @@ int main() {
     run_price_feature_tests();
     run_book_feature_tests();
     run_microstructure_feature_tests();
+    run_statistical_feature_tests();
     run_flow_feature_tests();
     run_edge_case_tests();
     run_pipeline_integration_tests();
+    run_feature_store_tests();
 
     std::cout << "\n======================================================\n";
     std::cout << "Test Summary\n";
@@ -64,6 +68,10 @@ int main() {
     print_feature_summary("BookPressureRatio");
     print_feature_summary("TradeFlowImbalance");
     print_feature_summary("EffectiveSpread");
+    print_feature_summary("VWAP_32");
+    print_feature_summary("RealizedVolatility_32");
+    print_feature_summary("PriceZScore_32");
+    print_feature_summary("OFI_ZScore_32");
     print_feature_summary("Validator_NaN");
     print_feature_summary("Validator_Inf");
     

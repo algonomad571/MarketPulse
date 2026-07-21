@@ -314,7 +314,7 @@ inline void run_preflight_checks(FeatureEngine& engine) {
     std::cout << std::left << std::setw(22) << "Worker Imbalance" << std::fixed << std::setprecision(1) << imbalance_pct << "%\n";
     std::cout << std::left << std::setw(22) << "Memory Allocations" << 0 << "\n";
     std::cout << std::left << std::setw(22) << "Validation" << "PASS\n\n";
-    std::cout << std::left << std::setw(22) << "Overall Status" << "READY FOR M5\n";
+    std::cout << std::left << std::setw(22) << "Overall Status" << "READY FOR M7\n";
     std::cout << "==================================================\n\n";
     
     std::cout << "Feature Engine Modules\n\n";
@@ -324,9 +324,10 @@ inline void run_preflight_checks(FeatureEngine& engine) {
     std::cout << ANSI_GREEN << "  " << check << " " << ANSI_RESET << "State Management (M2)\n";
     std::cout << ANSI_GREEN << "  " << check << " " << ANSI_RESET << "Compile-Time Pipeline (M3)\n";
     std::cout << ANSI_GREEN << "  " << check << " " << ANSI_RESET << "Core Price Features (M4)\n";
-    std::cout << ANSI_GREEN << "  " << check << " " << ANSI_RESET << "Market Microstructure Features (M5)\n\n";
+    std::cout << ANSI_GREEN << "  " << check << " " << ANSI_RESET << "Market Microstructure Features (M5)\n";
+    std::cout << ANSI_GREEN << "  " << check << " " << ANSI_RESET << "Statistical & Time-Series Features (M6)\n\n";
     
-    std::cout << "Milestones 1-4 Status\n\n";
+    std::cout << "Milestones 1-6 Status\n\n";
     std::cout << ANSI_GREEN << "COMPLETE\n\n" << ANSI_RESET;
 }
 

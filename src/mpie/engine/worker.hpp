@@ -13,6 +13,7 @@
 #include "feature_pipeline.hpp"
 #include "feature_validator.hpp"
 #include "feature_publisher.hpp"
+#include "../storage/feature_store_worker.hpp"
 
 namespace md::mpie {
 
@@ -83,6 +84,7 @@ private:
     FeaturePipeline pipeline_;
     FeatureValidator validator_;
     FeaturePublisher publisher_;
+    FeatureStoreWorker store_worker_;
 };
 
 } // namespace md::mpie

@@ -19,7 +19,11 @@ enum FeatureIndex : size_t {
     IDX_BOOK_PRESSURE_RATIO = 8,
     IDX_TRADE_FLOW_IMBALANCE = 9,
     IDX_EFFECTIVE_SPREAD = 10,
-    TOTAL_METRICS = 11
+    IDX_VWAP_32 = 11,
+    IDX_REALIZED_VOLATILITY_32 = 12,
+    IDX_PRICE_ZSCORE_32 = 13,
+    IDX_OFI_ZSCORE_32 = 14,
+    TOTAL_METRICS = 15
 };
 
 struct alignas(64) FeatureVector {

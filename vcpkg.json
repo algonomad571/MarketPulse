@@ -9,6 +9,7 @@
     "boost-beast",
     "spdlog",
     "fmt",
-    "nlohmann-json"
+    "nlohmann-json",
+    "boost-lockfree"
   ]
 }
