@@ -38,7 +38,7 @@ void FeatureEngine::startup_self_test() const {
     std::cout << ANSI_GREEN << "[Engine] [PASS] Structural invariants verified.\n" << ANSI_RESET;
 }
 
-void FeatureEngine::initialize() {
+void FeatureEngine::initialize(uint32_t universe_size) {
     std::cout << ANSI_CYAN << "[Engine] " << ANSI_RESET << "Initializing with " << num_workers_ << " workers.\n";
     
     if (!registry_.validate()) {
@@ -47,7 +47,7 @@ void FeatureEngine::initialize() {
     }
     
     for (uint32_t i = 0; i < num_workers_; ++i) {
-        workers_.push_back(std::make_unique<Worker>(i));
+        workers_.push_back(std::make_unique<Worker>(i, universe_size));
     }
 
     startup_self_test();

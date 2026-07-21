@@ -15,7 +15,7 @@ public:
     FeatureEngine(const FeatureEngine&) = delete;
     FeatureEngine& operator=(const FeatureEngine&) = delete;
 
-    void initialize();
+    void initialize(uint32_t universe_size);
     void start() noexcept;
     void stop() noexcept;
 

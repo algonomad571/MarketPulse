@@ -17,9 +17,10 @@ constexpr std::string_view ANSI_YELLOW = "\033[33m";
 constexpr std::string_view ANSI_RED    = "\033[31m";
 constexpr std::string_view ANSI_CYAN   = "\033[36m";
 
-Worker::Worker(uint32_t worker_id)
+Worker::Worker(uint32_t worker_id, uint32_t universe_size)
     : worker_id_(worker_id),
-      queue_(std::make_shared<moodycamel::ConcurrentQueue<MarketEvent>>(1024 * 1024))
+      queue_(std::make_shared<moodycamel::ConcurrentQueue<MarketEvent>>(1024 * 1024)),
+      state_manager_(universe_size)
 {}
 
 Worker::~Worker() {
@@ -92,7 +93,6 @@ void Worker::thread_func(std::stop_token token) noexcept {
         
         size_t peak = diagnostics_.peak_occupancy.load(std::memory_order_relaxed);
         if (current_occ > peak) {
-            // Uncontended, single writer so a simple store or CAS is fine
             diagnostics_.peak_occupancy.compare_exchange_weak(peak, current_occ, std::memory_order_relaxed);
         }
 
@@ -100,15 +100,41 @@ void Worker::thread_func(std::stop_token token) noexcept {
             // Calculate entry-to-dispatch delta
             auto dispatch_time = std::chrono::high_resolution_clock::now();
             uint64_t latency_ns = 0;
-            // Only calculate if the timestamp looks like a realistic chrono count (not just i=1,2,3 from tests)
             if (event.timestamp > 1000000000ULL) { 
                 latency_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     dispatch_time.time_since_epoch() - std::chrono::nanoseconds(event.timestamp)
                 ).count();
             }
 
-            // Processing logic goes here (State Management in M2)
-            // ...
+            auto state_update_start = std::chrono::high_resolution_clock::now();
+            
+            // M2: State Management & Context Building (Hot Path)
+            state_manager_.update_state(event);
+            
+            auto state_update_end = std::chrono::high_resolution_clock::now();
+            uint64_t state_update_latency_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(state_update_end - state_update_start).count();
+
+            // Build Context (Zero Allocation)
+            FeatureContext context = context_builder_.build(
+                event,
+                state_manager_.get_state(event.symbol_id),
+                state_update_latency_ns
+            );
+            
+            // M3: Compile-Time Pipeline Execution
+            FeatureVector fv{};
+            fv.engine_timestamp = event.timestamp;
+            fv.symbol_id = event.symbol_id;
+            fv.version = 1;
+            fv.is_valid = true;
+            
+            pipeline_.execute_pipeline(&context, fv);
+            validator_.validate(fv);
+            publisher_.publish(fv);
+
+            // Touch context to prevent optimizer from stripping it out of our bench
+            volatile uint64_t dummy = fv.engine_timestamp;
+            (void)dummy;
 
             auto iter_end = std::chrono::high_resolution_clock::now();
             
@@ -125,7 +151,6 @@ void Worker::thread_func(std::stop_token token) noexcept {
         } else {
             diagnostics_.pop_failures.fetch_add(1, std::memory_order_relaxed);
             
-            // Spin/yield
             std::this_thread::yield(); 
             
             auto iter_end = std::chrono::high_resolution_clock::now();

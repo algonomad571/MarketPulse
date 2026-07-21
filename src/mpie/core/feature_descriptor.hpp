@@ -4,6 +4,7 @@
 #include <string_view>
 #include <span>
 #include <type_traits>
+#include "feature_vector.hpp"
 
 namespace md::mpie {
 
@@ -42,11 +43,6 @@ struct alignas(64) FeatureDescriptor {
     uint8_t _pad[8]; // Padding to explicitly reach 64 bytes if needed, though alignas handles it.
 };
 
-struct alignas(64) FeatureVector {
-    uint64_t timestamp;
-    uint32_t symbol_id;
-    double values[6]; // Dummy placeholder for 64-byte alignment
-};
 
 struct alignas(64) ExecutionMetadata {
     uint64_t engine_timestamp;

@@ -11,7 +11,7 @@ int main() {
     FeatureEngine engine(4);
     
     // Initialize the engine (validates registry, sets up workers and queues)
-    engine.initialize();
+    engine.initialize(2000);
 
     // Start processing threads (pinned to cores)
     engine.start();

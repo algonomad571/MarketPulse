@@ -8,6 +8,12 @@
 #include <array>
 #include <chrono>
 
+#include "state_manager.hpp"
+#include "context_builder.hpp"
+#include "feature_pipeline.hpp"
+#include "feature_validator.hpp"
+#include "feature_publisher.hpp"
+
 namespace md::mpie {
 
 // Task 3, 4, 7: Lock-Free Queue & Worker Diagnostics + Latency Histogram
@@ -45,7 +51,7 @@ struct alignas(64) WorkerDiagnostics {
 
 class Worker {
 public:
-    explicit Worker(uint32_t worker_id);
+    explicit Worker(uint32_t worker_id, uint32_t universe_size);
     ~Worker();
 
     Worker(const Worker&) = delete;
@@ -70,6 +76,13 @@ private:
     std::atomic<bool> running_{false};
     
     WorkerDiagnostics diagnostics_;
+    
+    StateManager state_manager_;
+    ContextBuilder context_builder_;
+    
+    FeaturePipeline pipeline_;
+    FeatureValidator validator_;
+    FeaturePublisher publisher_;
 };
 
 } // namespace md::mpie
