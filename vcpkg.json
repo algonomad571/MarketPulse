@@ -10,6 +10,7 @@
     "spdlog",
     "fmt",
     "nlohmann-json",
-    "boost-lockfree"
+    "boost-lockfree",
+    "boost-interprocess"
   ]
 }

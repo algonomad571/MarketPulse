@@ -11,6 +11,7 @@ add_executable(mpie_math_tests
     math/test_edge_cases.cpp
     math/test_pipeline_integration.cpp
     storage/test_feature_store.cpp
+    egress/test_shm_egress.cpp
 )
 
 target_include_directories(mpie_math_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)

@@ -2,6 +2,7 @@
 
 #include "worker.hpp"
 #include "../registry/feature_registry.hpp"
+#include "../egress/shm_publisher.hpp"
 #include <vector>
 #include <memory>
 
@@ -34,6 +35,7 @@ private:
     uint32_t num_workers_;
     FeatureRegistry registry_;
     std::vector<std::unique_ptr<Worker>> workers_;
+    std::unique_ptr<ShmPublisher> shm_publisher_;
     bool running_{false};
 };
 

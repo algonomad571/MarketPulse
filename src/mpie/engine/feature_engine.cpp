@@ -46,8 +46,10 @@ void FeatureEngine::initialize(uint32_t universe_size) {
         std::abort();
     }
     
+    shm_publisher_ = std::make_unique<ShmPublisher>(universe_size);
+    
     for (uint32_t i = 0; i < num_workers_; ++i) {
-        workers_.push_back(std::make_unique<Worker>(i, universe_size));
+        workers_.push_back(std::make_unique<Worker>(i, universe_size, shm_publisher_.get()));
     }
 
     startup_self_test();

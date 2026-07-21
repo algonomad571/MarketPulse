@@ -50,9 +50,11 @@ struct alignas(64) WorkerDiagnostics {
     }
 };
 
+class ShmPublisher;
+
 class Worker {
 public:
-    explicit Worker(uint32_t worker_id, uint32_t universe_size);
+    Worker(uint32_t worker_id, uint32_t universe_size, ShmPublisher* shm_pub = nullptr);
     ~Worker();
 
     Worker(const Worker&) = delete;

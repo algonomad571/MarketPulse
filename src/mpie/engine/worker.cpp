@@ -17,13 +17,14 @@ constexpr std::string_view ANSI_YELLOW = "\033[33m";
 constexpr std::string_view ANSI_RED    = "\033[31m";
 constexpr std::string_view ANSI_CYAN   = "\033[36m";
 
-Worker::Worker(uint32_t worker_id, uint32_t universe_size)
+Worker::Worker(uint32_t worker_id, uint32_t universe_size, ShmPublisher* shm_pub)
     : worker_id_(worker_id),
       queue_(std::make_shared<moodycamel::ConcurrentQueue<MarketEvent>>(1024 * 1024)),
       state_manager_(universe_size),
       store_worker_("worker_" + std::to_string(worker_id) + "_features.bin")
 {
     publisher_.set_store(&store_worker_);
+    publisher_.set_shm(shm_pub);
 }
 
 Worker::~Worker() {
